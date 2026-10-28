@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import {
-  sb, appUrl, portal, PORTAIS, ETAPAS, etapa, ATIVAS, PAPEIS, fmtData, fmtDataCurta, fmtHora, fmtDH, diaChave, hojeChave,
+  sb, appUrl, portal, PORTAIS, ETAPAS, etapa, ATIVAS, A_LANCAR, ACOMPANHANDO, CATEGORIAS, PAPEIS, fmtData, fmtDataCurta, fmtHora, fmtDH, diaChave, hojeChave,
   diaLongo, falta, brl, num, parseNum, fmtIn, valorMinimo, errMsg, chamarRobo, iniciais,
 } from "./util.js";
 
@@ -144,6 +144,25 @@ textarea.input{height:auto;min-height:80px;padding:10px 11px;resize:vertical}
 
 .pcard{display:flex;flex-direction:column;gap:8px;text-align:left;border:1px solid var(--line);border-radius:14px;padding:14px;background:var(--surface);width:100%}
 .pcard:hover{border-color:#B9D4DA;box-shadow:var(--shadow)}
+.pcard{cursor:pointer}
+.pcard.tem-nv{border-color:#F59E0B66}
+.pcard .acomp{display:flex;flex-direction:column;gap:6px;background:var(--line-2);border-radius:10px;padding:8px 10px}
+.pcard .pedido{font-size:12.5px;color:var(--ink-2)}
+.tag.ok{background:#DCFCE7;color:#166534}
+.tag.warn{background:#FEF3C7;color:#92400E}
+.seg.cats{display:flex;width:100%}
+.seg.cats button{display:inline-flex;align-items:center;gap:6px}
+.seg .cnt{font-size:11px;background:var(--line);color:var(--ink-2);border-radius:99px;padding:0 7px;line-height:18px}
+.seg button.on .cnt{background:var(--accent-soft);color:var(--accent-ink)}
+.chips.filtros{gap:6px}
+.fsel{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.fsel select{width:auto;min-width:130px}
+.docs{display:flex;flex-direction:column;gap:6px}
+.docs a{display:flex;gap:8px;align-items:center;padding:8px 10px;border:1px solid var(--line);border-radius:10px;font-size:13px;text-decoration:none;color:var(--ink)}
+.docs a:hover{border-color:#B9D4DA}
+.itab{width:100%;border-collapse:collapse;font-size:12.5px}
+.itab th,.itab td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line-2);vertical-align:top}
+.itab td.n{text-align:right;white-space:nowrap}
 .pgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px}
 .pcard .ptop{display:flex;justify-content:space-between;gap:8px;align-items:flex-start}
 .pcard .porg{font-weight:700}
@@ -192,6 +211,9 @@ textarea.input{height:auto;min-height:80px;padding:10px 11px;resize:vertical}
 .sheet-bg{position:fixed;inset:0;background:rgba(14,26,38,.45);z-index:60;display:flex;align-items:flex-end;justify-content:center;padding:calc(16px + env(safe-area-inset-top,0px)) 0 0}
 .sheet{background:var(--surface);width:100%;max-width:560px;max-height:100%;overflow:auto;border-radius:20px 20px 0 0;padding:18px max(18px, env(safe-area-inset-right,0px)) calc(20px + env(safe-area-inset-bottom,0px)) max(18px, env(safe-area-inset-left,0px));display:flex;flex-direction:column;gap:12px}
 @media (min-width:720px){.sheet-bg{align-items:center;padding:24px}.sheet{border-radius:18px}}
+.sheet.wide{max-width:920px}
+.ed-top.click{cursor:pointer}
+.ed-top.click:hover .ed-obj{color:var(--accent-ink)}
 .sheet-h{display:flex;justify-content:space-between;align-items:center;gap:10px}
 .sheet-h h2{margin:0;font-size:17px}
 
@@ -590,11 +612,20 @@ const icoMov = (m) => ({ chat: "💬", documento: "📄", resultado: "🏁", ite
 /* ============================================================
    Radar de editais
    ============================================================ */
+const UFS_BR = ["AC", "AL", "AM", "AP", "BA", "CE", "DF", "ES", "GO", "MA", "MG", "MS", "MT", "PA", "PB", "PE", "PI", "PR", "RJ", "RN", "RO", "RR", "RS", "SC", "SE", "SP", "TO"];
+const lerPref = (k, pad) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : pad; } catch (e) { return pad; } };
+const gravarPref = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* ignora */ } };
+
 function Radar({ ctx }) {
   const { notify, abrir } = ctx;
   const pode = ctx.podeEquipe; // buscar e marcar editais vale também no celular
+  const ufsRadar = (ctx.config && ctx.config.ufs && ctx.config.ufs.length ? ctx.config.ufs : [ctx.config ? ctx.config.uf || "MG" : "MG"]);
   const [modo, setModo] = useState("relevantes");
   const [port, setPort] = useState("todos");
+  const [uf, setUf] = useState(() => lerPref("lp-radar-uf", "todos"));
+  const [regiao, setRegiao] = useState(() => lerPref("lp-radar-regiao", "todas"));
+  const [ddds, setDdds] = useState(() => lerPref("lp-radar-ddds", []));
+  const [mapa, setMapa] = useState([]); // [{uf, regiao, ddd, municipios}]
   const [q, setQ] = useState("");
   const [busca, setBusca] = useState("");
   const [lista, setLista] = useState(null);
@@ -602,8 +633,17 @@ function Radar({ ctx }) {
   const [total, setTotal] = useState(0);
   const [ocupado, setOcupado] = useState("");
   const [rodando, setRodando] = useState(false);
+  const [aberto, setAberto] = useState(null);
 
   useEffect(() => { const t = setTimeout(() => setBusca(q.trim()), 350); return () => clearTimeout(t); }, [q]);
+  useEffect(() => { sb.rpc("regioes_uf", { p_ufs: ufsRadar }).then(({ data }) => setMapa(data || [])); }, [ufsRadar.join(",")]);
+  useEffect(() => { gravarPref("lp-radar-uf", uf); gravarPref("lp-radar-regiao", regiao); gravarPref("lp-radar-ddds", ddds); }, [uf, regiao, ddds]);
+
+  // Opções de região e DDD conforme o estado escolhido
+  const doUf = mapa.filter((m) => uf === "todos" || m.uf === uf);
+  const regioes = [...new Set(doUf.map((m) => m.regiao).filter(Boolean))].sort();
+  const dddsOp = [...new Set(doUf.filter((m) => regiao === "todas" || m.regiao === regiao).map((m) => m.ddd).filter(Boolean))].sort((a, b) => a - b);
+  const multiUf = ufsRadar.length > 1;
 
   const carregar = useCallback(async () => {
     let query = sb.from("editais").select("*", { count: "exact" });
@@ -611,6 +651,9 @@ function Radar({ ctx }) {
     else if (modo === "abertos") query = query.neq("status", "descartado").gte("encerramento_propostas", new Date().toISOString());
     else if (modo === "descartados") query = query.eq("status", "descartado");
     if (port !== "todos") query = port === "outros" ? query.not("portal", "in", "(pcp,licitar,comprasgov,bll,licitacoes-e)") : query.eq("portal", port);
+    if (uf !== "todos") query = query.eq("uf", uf);
+    if (regiao !== "todas") query = query.eq("regiao", regiao);
+    if (ddds.length) query = query.in("ddd", ddds);
     if (busca) {
       const s = busca.replace(/[,()%*]/g, " ").trim();
       if (s) query = query.or(`objeto.ilike.%${s}%,orgao.ilike.%${s}%,municipio.ilike.%${s}%`);
@@ -619,9 +662,10 @@ function Radar({ ctx }) {
     const { data, count, error } = await query.limit(limite);
     if (error) { notify(errMsg(error)); setLista([]); return; }
     setLista(data); setTotal(count || 0);
-  }, [modo, port, busca, limite]);
+  }, [modo, port, busca, limite, uf, regiao, ddds.join(",")]);
   useEffect(() => { carregar(); }, [carregar]);
 
+  const atualizar = (e) => { setLista((l) => (l || []).map((x) => (x.id === e.id ? { ...x, ...e } : x))); setAberto((a) => (a && a.id === e.id ? { ...a, ...e } : a)); };
   const acompanhar = async (e) => {
     setOcupado(e.id);
     try {
@@ -640,7 +684,7 @@ function Radar({ ctx }) {
       const patch = { favorito: true };
       if (pr && pr.etapa === "analise") patch.etapa = "participar";
       await sb.from("processos").update(patch).eq("id", r.id);
-      setLista((l) => l.map((x) => (x.id === e.id ? { ...x, status: "acompanhando" } : x)));
+      atualizar({ id: e.id, status: "acompanhando" });
       notify("⭐ Marcado como “Vamos participar”. Ele aparece em Processos e na Agenda.");
       ctx.carregar();
     } catch (err) { notify(errMsg(err)); }
@@ -650,19 +694,25 @@ function Radar({ ctx }) {
     const { error } = await sb.from("editais").update({ status }).eq("id", e.id);
     if (error) return notify(errMsg(error));
     setLista((l) => (modo === "descartados" || status === "descartado" ? l.filter((x) => x.id !== e.id) : l));
-    notify(status === "descartado" ? "Edital descartado" : "Edital de volta ao radar");
+    if (aberto && aberto.id === e.id) setAberto(null);
+    notify(status === "descartado" ? "Edital descartado. Ele some sozinho depois da data da sessão." : "Edital de volta ao radar");
   };
   const rodar = async () => {
     setRodando(true);
-    try { const r = await chamarRobo({ acao: "radar" }); notify(`Radar atualizado: ${r.lidos} editais lidos, ${r.relevantes} relevantes`); carregar(); }
-    catch (err) { notify(errMsg(err)); }
+    try {
+      const r = await chamarRobo({ acao: "radar" }, "licita-radar");
+      notify(`Radar atualizado: ${r.lidos} editais lidos, ${r.relevantes} relevantes${r.detalhados ? `, documentos de ${r.detalhados}` : ""}${r.parcial ? " (o resto entra na próxima rodada)" : ""}`);
+      carregar();
+    } catch (err) { notify(errMsg(err)); }
     setRodando(false);
   };
+  const acoes = { pode, ocupado, favoritar, acompanhar, marcar };
+  const filtrosAtivos = (uf !== "todos" ? 1 : 0) + (regiao !== "todas" ? 1 : 0) + ddds.length;
 
   return (
     <div className="stack">
       <div className="top">
-        <div><h1>Radar de editais</h1><p>Licitações publicadas no PNCP em {ctx.config ? ctx.config.uf : "MG"}, filtradas pelos produtos da empresa</p></div>
+        <div><h1>Radar de editais</h1><p>Licitações publicadas no PNCP em {ufsRadar.join(", ")}, filtradas pelos produtos da empresa</p></div>
         {pode && <button className="btn ghost" onClick={rodar} disabled={rodando}>{rodando ? <span className="spin" /> : <Icon name="refresh" size={16} />}Buscar agora</button>}
       </div>
       <div className="card form">
@@ -677,6 +727,24 @@ function Radar({ ctx }) {
             <span style={{ position: "absolute", left: 10, top: 10, color: "var(--muted)" }}><Icon name="search" size={18} /></span>
           </div>
         </div>
+        <div className="fsel">
+          <select className="input" value={uf} onChange={(e) => { setUf(e.target.value); setRegiao("todas"); setDdds([]); setLimite(50); }} aria-label="Estado">
+            <option value="todos">{multiUf ? "Todos os estados" : `Estado: ${ufsRadar[0]}`}</option>
+            {multiUf && ufsRadar.map((u) => <option key={u} value={u}>{u}</option>)}
+          </select>
+          <select className="input" value={regiao} onChange={(e) => { setRegiao(e.target.value); setDdds([]); setLimite(50); }} aria-label="Região" disabled={!regioes.length}>
+            <option value="todas">Todas as regiões</option>
+            {regioes.map((r) => <option key={r} value={r}>{r}</option>)}
+          </select>
+          <span className="hint">DDD:</span>
+          <div className="chips filtros">
+            {dddsOp.map((d) => {
+              const on = ddds.includes(d);
+              return <button key={d} className={`chip${on ? " on" : ""}`} aria-pressed={on} onClick={() => { setDdds(on ? ddds.filter((x) => x !== d) : [...ddds, d]); setLimite(50); }}>{d}</button>;
+            })}
+          </div>
+          {filtrosAtivos > 0 && <button className="linkbtn" style={{ fontSize: 12.5 }} onClick={() => { setUf("todos"); setRegiao("todas"); setDdds([]); }}>Limpar local</button>}
+        </div>
         <div className="chips">
           {[["todos", "Todos os portais"], ["pcp", PORTAIS.pcp.nome], ["licitar", PORTAIS.licitar.nome], ["comprasgov", PORTAIS.comprasgov.nome], ["bll", PORTAIS.bll.nome], ["licitacoes-e", PORTAIS["licitacoes-e"].nome], ["outros", "Outros"]].map(([k, l]) => (
             <button key={k} className={`chip${port === k ? " on" : ""}`} onClick={() => { setPort(k); setLimite(50); }}>{l}</button>
@@ -684,18 +752,19 @@ function Radar({ ctx }) {
         </div>
       </div>
       <div className="card">
-        <div className="card-h"><h2>{lista === null ? "Carregando…" : `${total} ${total === 1 ? "edital" : "editais"}`}</h2><small>Ordenados pela data da sessão</small></div>
-        {lista && !lista.length && <div className="empty"><b>Nada por aqui</b>{modo === "relevantes" ? "O radar roda a cada hora. Ajuste as palavras-chave em Ajustes se estiver deixando algo de fora." : "Tente outro filtro ou busca."}</div>}
+        <div className="card-h"><h2>{lista === null ? "Carregando…" : `${total} ${total === 1 ? "edital" : "editais"}`}</h2><small>{modo === "descartados" ? "Somem sozinhos depois da data da sessão" : "Ordenados pela data da sessão · toque para ver detalhes e documentos"}</small></div>
+        {lista && !lista.length && <div className="empty"><b>Nada por aqui</b>{modo === "relevantes" ? "O radar roda a cada hora. Ajuste as palavras-chave ou os filtros de local se estiver deixando algo de fora." : "Tente outro filtro ou busca."}</div>}
         {lista && lista.length > 0 && (
           <div>
             {lista.map((e) => (
               <div className="ed" key={e.id}>
-                <div className="ed-top">
+                <div className="ed-top click" role="button" tabIndex={0} onClick={() => setAberto(e)} onKeyDown={(k) => k.key === "Enter" && setAberto(e)}>
                   <div className="ed-obj clamp3">{e.objeto || "Sem descrição"}</div>
                   {e.status === "acompanhando" && <span className="tag" style={{ background: "var(--accent-soft)", color: "var(--accent-ink)" }}>Acompanhando</span>}
                 </div>
                 <div className="ed-meta">
-                  <span><b>{e.orgao}</b>{e.municipio ? ` · ${e.municipio}` : ""}</span>
+                  <span><b>{e.orgao}</b>{e.municipio ? ` · ${e.municipio}${multiUf || uf === "todos" ? `/${e.uf}` : ""}` : ""}</span>
+                  {e.regiao && <span className="tag">{e.regiao}{e.ddd ? ` · DDD ${e.ddd}` : ""}</span>}
                   <PortalTag k={e.portal} />
                   <span>{e.modalidade}{e.numero ? ` nº ${e.numero}` : ""}</span>
                 </div>
@@ -703,21 +772,133 @@ function Radar({ ctx }) {
                   <span>Sessão: <b>{fmtDH(e.encerramento_propostas)}</b> ({falta(e.encerramento_propostas)})</span>
                   {Number(e.valor_estimado) > 0 && <span>Estimado: <b>{brl(e.valor_estimado)}</b></span>}
                   {e.srp && <span>Registro de preços</span>}
+                  {Array.isArray(e.documentos) && <span>📎 {e.documentos.length} documento(s)</span>}
                 </div>
                 {e.termos && e.termos.length > 0 && <div className="termos">{e.termos.slice(0, 6).map((t) => <span key={t}>{t}</span>)}</div>}
                 <div className="row-inline">
-                  {pode && e.status !== "acompanhando" && <button className="btn sm" onClick={() => favoritar(e)} disabled={ocupado === e.id} title="Ainda não enviamos proposta, mas vamos participar desta sessão">{ocupado === e.id ? <><span className="spin" />Marcando…</> : "⭐ Vamos participar"}</button>}
-                  {pode && e.status !== "acompanhando" && <button className="btn ghost sm" onClick={() => acompanhar(e)} disabled={ocupado === e.id}>Só acompanhar</button>}
-                  {pode && e.status === "novo" && <button className="btn ghost sm" onClick={() => marcar(e, "descartado")}>Descartar</button>}
-                  {pode && e.status === "descartado" && <button className="btn ghost sm" onClick={() => marcar(e, "novo")}>Voltar ao radar</button>}
-                  {e.link_origem && <a className="btn ghost sm" href={e.link_origem} target="_blank" rel="noopener noreferrer"><Icon name="ext" size={14} />Portal</a>}
-                  <a className="btn ghost sm" href={`https://pncp.gov.br/app/editais/${e.cnpj}/${e.ano}/${e.seq}`} target="_blank" rel="noopener noreferrer"><Icon name="ext" size={14} />PNCP</a>
+                  <button className="btn ghost sm" onClick={() => setAberto(e)}>Ver detalhes</button>
+                  <BotoesEdital e={e} {...acoes} />
                 </div>
               </div>
             ))}
             {lista.length < total && <button className="btn ghost block" style={{ marginTop: 10 }} onClick={() => setLimite(limite + 50)}>Mostrar mais</button>}
           </div>
         )}
+      </div>
+      {aberto && <EditalDetalhe e={aberto} onClose={() => setAberto(null)} onAtualizado={atualizar} notify={notify} acoes={acoes} />}
+    </div>
+  );
+}
+
+function BotoesEdital({ e, pode, ocupado, favoritar, acompanhar, marcar }) {
+  return (
+    <>
+      {pode && e.status !== "acompanhando" && <button className="btn sm" onClick={() => favoritar(e)} disabled={ocupado === e.id} title="Ainda não enviamos proposta, mas vamos participar desta sessão">{ocupado === e.id ? <><span className="spin" />Marcando…</> : "⭐ Vamos participar"}</button>}
+      {pode && e.status !== "acompanhando" && <button className="btn ghost sm" onClick={() => acompanhar(e)} disabled={ocupado === e.id}>Só acompanhar</button>}
+      {pode && e.status === "novo" && <button className="btn ghost sm" onClick={() => marcar(e, "descartado")}>Descartar</button>}
+      {pode && e.status === "descartado" && <button className="btn ghost sm" onClick={() => marcar(e, "novo")}>Voltar ao radar</button>}
+      {e.link_origem && <a className="btn ghost sm" href={e.link_origem} target="_blank" rel="noopener noreferrer"><Icon name="ext" size={14} />Portal</a>}
+      <a className="btn ghost sm" href={`https://pncp.gov.br/app/editais/${e.cnpj}/${e.ano}/${e.seq}`} target="_blank" rel="noopener noreferrer"><Icon name="ext" size={14} />PNCP</a>
+    </>
+  );
+}
+
+function EditalDetalhe({ e, onClose, onAtualizado, notify, acoes }) {
+  const [buscando, setBuscando] = useState(false);
+  const [erro, setErro] = useState("");
+  const [qi, setQi] = useState("");
+  const buscar = async () => {
+    setBuscando(true); setErro("");
+    try { const r = await chamarRobo({ acao: "edital", id: e.id }, "licita-radar"); if (r.edital) onAtualizado(r.edital); }
+    catch (err) { setErro(errMsg(err)); }
+    setBuscando(false);
+  };
+  // Sem detalhe ainda, ou detalhe com mais de 6 h: busca no PNCP ao abrir.
+  useEffect(() => {
+    if (!e.detalhe_em || Date.now() - Date.parse(e.detalhe_em) > 6 * 3600e3) buscar();
+  }, [e.id]);
+  useEffect(() => { const esc = (k) => k.key === "Escape" && onClose(); document.addEventListener("keydown", esc); return () => document.removeEventListener("keydown", esc); }, []);
+
+  const info = e.info || {};
+  const docs = Array.isArray(e.documentos) ? e.documentos : null;
+  const itens = Array.isArray(e.itens) ? e.itens : null;
+  const termos = (e.termos || []).map((t) => t.toLowerCase());
+  const itensF = (itens || []).filter((i) => !qi || `${i.n} ${i.d}`.toLowerCase().includes(qi.toLowerCase()));
+  const casa = (d) => termos.some((t) => (d || "").toLowerCase().includes(t));
+
+  return (
+    <div className="sheet-bg" onClick={onClose}>
+      <div className="sheet wide" onClick={(x) => x.stopPropagation()} role="dialog" aria-modal="true" aria-label="Detalhes do edital">
+        <div className="sheet-h">
+          <h2 style={{ minWidth: 0 }}>{e.orgao}</h2>
+          <button type="button" className="iconbtn" onClick={onClose} aria-label="Fechar"><Icon name="x" size={18} /></button>
+        </div>
+        <div className="row-inline" style={{ gap: 6 }}>
+          <PortalTag k={e.portal} />
+          {e.modalidade && <span className="tag">{e.modalidade}{e.numero ? ` nº ${e.numero}` : ""}</span>}
+          {e.srp && <span className="tag">Registro de preços</span>}
+          {e.status === "acompanhando" && <span className="tag" style={{ background: "var(--accent-soft)", color: "var(--accent-ink)" }}>Acompanhando</span>}
+          {e.status === "descartado" && <span className="tag">Descartado</span>}
+        </div>
+        <p style={{ margin: 0, fontSize: 14 }}>{e.objeto}</p>
+        <div className="facts">
+          <div className="fact"><small>Sessão (fim das propostas)</small><b>{fmtDH(e.encerramento_propostas)}</b><div className="hint">{falta(e.encerramento_propostas)}</div></div>
+          <div className="fact"><small>Início das propostas</small><b>{fmtDH(e.abertura_propostas)}</b></div>
+          <div className="fact"><small>Valor estimado</small><b>{Number(e.valor_estimado) > 0 ? brl(e.valor_estimado) : "Sigiloso ou não informado"}</b></div>
+          <div className="fact"><small>Local</small><b>{[e.municipio, e.uf].filter(Boolean).join("/")}</b><div className="hint">{[e.regiao, e.ddd && `DDD ${e.ddd}`].filter(Boolean).join(" · ")}</div></div>
+          <div className="fact"><small>Situação</small><b>{e.situacao || "—"}</b></div>
+          {(info.modo_disputa || info.criterio) && <div className="fact"><small>Disputa</small><b>{info.modo_disputa || "—"}</b><div className="hint">{info.criterio || ""}</div></div>}
+        </div>
+        {(e.unidade || e.processo_num || info.amparo) && (
+          <div className="hint">{[e.unidade && `Unidade: ${e.unidade}`, e.processo_num && `Processo: ${e.processo_num}`, info.amparo && `Base legal: ${info.amparo}`].filter(Boolean).join(" · ")}</div>
+        )}
+        {info.complemento && <div className="banner info" style={{ display: "block" }}><b>Informação complementar:</b> {info.complemento}</div>}
+        {e.termos && e.termos.length > 0 && <div className="termos">{e.termos.map((t) => <span key={t}>{t}</span>)}</div>}
+
+        {buscando && <div className="banner info"><span className="spin" /><span>Buscando documentos e itens no PNCP… leva uns 10 segundos.</span></div>}
+        {erro && <div className="banner warn"><span>⚠ {erro} <button className="linkbtn" onClick={buscar}>Tentar de novo</button></span></div>}
+
+        <div className="stack" style={{ gap: 8 }}>
+          <div className="card-h" style={{ marginBottom: 0 }}><h2>Documentos {docs ? `(${docs.length})` : ""}</h2>{e.detalhe_em && <small>Atualizado {falta(e.detalhe_em)}{!buscando && <> · <button className="linkbtn" style={{ fontSize: 12 }} onClick={buscar}>atualizar</button></>}</small>}</div>
+          {docs === null ? <div className="hint">{buscando ? "Carregando…" : "Ainda não buscado."}</div> : !docs.length ? <div className="hint">Nenhum documento publicado no PNCP. Confira no portal do processo.</div> : (
+            <div className="docs">
+              {docs.map((d, i) => (
+                <a key={i} href={d.url} target="_blank" rel="noopener noreferrer">
+                  <span>📄</span><span style={{ flex: 1, minWidth: 0 }}><b>{d.titulo}</b>{d.tipo && d.tipo !== d.titulo ? <span className="hint"> · {d.tipo}</span> : null}</span>
+                  {d.publicado && <span className="hint">{fmtDataCurta(d.publicado)}</span>}
+                </a>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="stack" style={{ gap: 8 }}>
+          <div className="card-h" style={{ marginBottom: 0 }}><h2>Itens {itens ? `(${itens.length})` : ""}</h2>
+            {itens && itens.length > 8 && <input className="input" style={{ maxWidth: 220 }} value={qi} onChange={(x) => setQi(x.target.value)} placeholder="Filtrar itens" aria-label="Filtrar itens" />}
+          </div>
+          {itens === null ? <div className="hint">{buscando ? "Carregando…" : "Ainda não buscado."}</div> : !itens.length ? <div className="hint">Itens não publicados no PNCP.</div> : (
+            <div style={{ overflowX: "auto", maxHeight: 380 }}>
+              <table className="itab">
+                <thead><tr><th>Nº</th><th>Descrição</th><th className="n">Qtd</th><th className="n">Unit. estimado</th></tr></thead>
+                <tbody>
+                  {itensF.map((i) => (
+                    <tr key={i.n} style={casa(i.d) ? { background: "var(--accent-soft)" } : undefined}>
+                      <td>{i.n}</td>
+                      <td>{i.d}{i.b && !/sem benef|n[aã]o se aplica/i.test(i.b) ? <div className="hint">{i.b}</div> : null}</td>
+                      <td className="n">{num(i.q)} {i.u || ""}</td>
+                      <td className="n">{i.vu != null ? brl(i.vu) : "Sigiloso"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {itens && termos.length > 0 && <div className="hint">Itens destacados contêm as palavras-chave da empresa.</div>}
+        </div>
+
+        <div className="row-inline" style={{ position: "sticky", bottom: 0, background: "var(--surface)", paddingTop: 10, borderTop: "1px solid var(--line-2)" }}>
+          <BotoesEdital e={e} {...acoes} />
+        </div>
       </div>
     </div>
   );
@@ -727,24 +908,37 @@ function Radar({ ctx }) {
    Processos
    ============================================================ */
 function Processos({ ctx }) {
-  const { procs, naoVistas, abrir, pode, equipe, empresas } = ctx;
-  const [filtro, setFiltro] = useState("ativos");
+  const { procs, naoVistas, abrir, pode, equipe, empresas, carregar, notify } = ctx;
+  const [filtro, setFiltro] = useState(() => { try { return sessionStorage.getItem("lp-cat") || ""; } catch (e) { return ""; } });
   const [emp, setEmp] = useState("todas");
-  const vamos = (p) => p.favorito && ["analise", "participar"].includes(p.etapa);
+  const [resumo, setResumo] = useState({});
   const [q, setQ] = useState("");
   const [novo, setNovo] = useState(false);
   const variasEmpresas = empresas.length > 1;
   const empDe = (id) => empresas.find((e) => e.id === id);
   const nomeDe = (e) => (equipe.find((p) => p.email === e) || {}).nome || (e ? e.split("@")[0] : "—");
-  const lista = (procs || []).filter((p) =>
-    (emp === "todas" || (emp === "sem" ? !p.empresa_id : p.empresa_id === emp)) &&
-    (filtro === "todos" || (filtro === "vamos" ? vamos(p) : filtro === "ativos" ? ATIVAS.includes(p.etapa) : filtro === "ganhos" ? p.etapa === "ganhamos" : ["perdemos", "desistimos", "encerrado"].includes(p.etapa))) &&
-    (!q || `${p.orgao} ${p.municipio} ${p.numero} ${p.objeto}`.toLowerCase().includes(q.toLowerCase())));
+
+  useEffect(() => {
+    sb.rpc("resumo_acompanhando").then(({ data }) => setResumo(Object.fromEntries((data || []).map((r) => [r.processo_id, r]))));
+  }, [procs]);
+
+  const daEmpresa = (procs || []).filter((p) => emp === "todas" || (emp === "sem" ? !p.empresa_id : p.empresa_id === emp));
+  const contagem = Object.fromEntries(CATEGORIAS.map((c) => [c.id, daEmpresa.filter(c.teste).length]));
+  // Sem escolha salva: abre em "Acompanhando" se houver; senão "Vamos participar".
+  const cat = CATEGORIAS.find((c) => c.id === filtro) || (contagem.acompanhando ? CATEGORIAS[2] : contagem.vamos ? CATEGORIAS[0] : CATEGORIAS[5]);
+  const escolher = (id) => { setFiltro(id); try { sessionStorage.setItem("lp-cat", id); } catch (e) { /* ignora */ } };
+  const lista = daEmpresa.filter((p) => cat.teste(p) && (!q || `${p.orgao} ${p.municipio} ${p.numero} ${p.objeto}`.toLowerCase().includes(q.toLowerCase())));
   const ordenada = [...lista].sort((a, b) => {
     const na = naoVistas[a.id] ? 1 : 0, nb = naoVistas[b.id] ? 1 : 0;
     if (na !== nb) return nb - na;
     return (a.data_sessao || "9") < (b.data_sessao || "9") ? -1 : 1;
   });
+  const naoLidosAqui = ordenada.filter((p) => naoVistas[p.id]).map((p) => p.id);
+  const marcarLida = async (ids, msg) => {
+    const { error } = await sb.rpc("marcar_visto", { p_ids: ids });
+    if (error) return notify(errMsg(error));
+    await carregar(); notify(msg);
+  };
 
   return (
     <div className="stack">
@@ -752,11 +946,19 @@ function Processos({ ctx }) {
         <div><h1>Processos</h1><p>Licitações que a equipe está acompanhando</p></div>
         {pode && <button className="btn" onClick={() => setNovo(true)}><Icon name="plus" size={17} />Acompanhar processos</button>}
       </div>
+      <div className="seg cats" role="tablist">
+        {CATEGORIAS.map((c) => (
+          <button key={c.id} role="tab" aria-selected={cat.id === c.id} className={cat.id === c.id ? "on" : ""} onClick={() => escolher(c.id)}>
+            {c.nome}{contagem[c.id] ? <span className="cnt">{contagem[c.id]}</span> : null}
+          </button>
+        ))}
+      </div>
       <div className="row-inline" style={{ justifyContent: "space-between" }}>
-        <div className="seg">
-          {[["ativos", "Ativos"], ["vamos", `⭐ Vamos participar${(procs || []).filter(vamos).length ? ` (${(procs || []).filter(vamos).length})` : ""}`], ["ganhos", "Ganhos"], ["perdidos", "Perdidos / encerrados"], ["todos", "Todos"]].map(([k, l]) => <button key={k} className={filtro === k ? "on" : ""} onClick={() => setFiltro(k)}>{l}</button>)}
+        <span className="hint">{cat.desc}</span>
+        <div className="row-inline">
+          {naoLidosAqui.length > 0 && <button type="button" className="btn ghost sm" onClick={() => marcarLida(naoLidosAqui, "Notificações marcadas como lidas")}>✓ Marcar todas como lidas</button>}
+          <input id="proc-busca" className="input" style={{ maxWidth: 280 }} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar órgão, número ou objeto" aria-label="Buscar processos" />
         </div>
-        <input id="proc-busca" className="input" style={{ maxWidth: 300 }} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar órgão, número ou objeto" aria-label="Buscar processos" />
       </div>
       {variasEmpresas && (
         <div className="chips">
@@ -766,19 +968,32 @@ function Processos({ ctx }) {
         </div>
       )}
       {procs === null ? <div className="card empty">Carregando…</div> : !ordenada.length ? (
-        <div className="card empty"><b>Nenhum processo aqui</b>{pode ? "Clique em “Acompanhar processos” para puxar os processos do portal, ou use “Acompanhar” no Radar." : "Quando a equipe cadastrar processos, eles aparecem aqui."}</div>
+        <div className="card empty"><b>Nenhum processo em “{cat.nome}”</b>{cat.id === "vamos" ? "Marque ⭐ “Vamos participar” num edital do Radar ou cadastre pelo link." : pode ? "Clique em “Acompanhar processos” para puxar os processos do portal, ou use o Radar." : "Quando a equipe cadastrar processos, eles aparecem aqui."}</div>
       ) : (
         <div className="pgrid">
           {ordenada.map((p) => {
             const nv = naoVistas[p.id];
+            const r = resumo[p.id];
+            const acomp = ACOMPANHANDO.includes(p.etapa);
             return (
-              <button key={p.id} className="pcard" onClick={() => abrir(p.id)}>
+              <div key={p.id} className={`pcard${nv ? " tem-nv" : ""}`} role="button" tabIndex={0} onClick={() => abrir(p.id)} onKeyDown={(e) => e.key === "Enter" && abrir(p.id)}>
                 <div className="ptop">
                   <div style={{ minWidth: 0 }}><div className="porg">{p.orgao || "Órgão"}</div><div className="hint">{[p.municipio, p.numero && `Nº ${p.numero}`].filter(Boolean).join(" · ")}</div></div>
-                  {nv && <span className={`badge${Number(nv.importantes) ? "" : " soft"}`} title="Movimentações novas">{nv.qtd}</span>}
+                  {nv && <span className={`badge${Number(nv.importantes) ? "" : " soft"}`} title={`${nv.qtd} movimentação(ões) nova(s)`}>{nv.qtd}</span>}
                 </div>
                 <div className="hint clamp2" style={{ color: "var(--ink-2)" }}>{p.objeto}</div>
-                <div className="row-inline">{vamos(p) && <span className="tag fav">⭐ Vamos participar</span>}<EtapaTag id={p.etapa} /><PortalTag k={p.portal} />{variasEmpresas && <span className="tag">{p.empresa_id ? nomeCurto(empDe(p.empresa_id)) : "Sem empresa"}</span>}</div>
+                <div className="row-inline">{p.favorito && A_LANCAR.includes(p.etapa) && <span className="tag fav">⭐ Vamos participar</span>}<EtapaTag id={p.etapa} /><PortalTag k={p.portal} />{variasEmpresas && <span className="tag">{p.empresa_id ? nomeCurto(empDe(p.empresa_id)) : "Sem empresa"}</span>}</div>
+                {r && (acomp || p.etapa === "ganhamos") && (r.itens_nossos > 0 || r.pedidos_nossos > 0) && (
+                  <div className="acomp">
+                    <div className="row-inline" style={{ gap: 6 }}>
+                      {r.itens_nossos > 0 && <span className="tag">{r.itens_nossos} item(ns) nosso(s)</span>}
+                      {r.arrematando > 0 && <span className="tag ok">🟢 arrematando {r.arrematando}</span>}
+                      {r.vencendo > 0 && <span className="tag ok">🏆 vencendo {r.vencendo}</span>}
+                      {r.pedidos_nossos > 0 && <span className="tag warn">📌 {r.pedidos_nossos} pedido(s) p/ nós</span>}
+                    </div>
+                    {r.ultimo_pedido && <div className="pedido clamp2"><b>{fmtDH(r.ultimo_pedido_em)}:</b> {r.ultimo_pedido}</div>}
+                  </div>
+                )}
                 <div className="estado">
                   {p.data_sessao ? <>Sessão {fmtDH(p.data_sessao)} · <b>{falta(p.data_sessao)}</b></> : "Data da sessão não informada"}
                   {(p.situacao_portal || p.situacao_pncp) && <div className="hint">{p.situacao_portal || p.situacao_pncp}</div>}
@@ -786,8 +1001,9 @@ function Processos({ ctx }) {
                 <div className="row-inline" style={{ justifyContent: "space-between" }}>
                   <span className="hint">Responsável: {nomeDe(p.responsavel)}</span>
                   {p.erro && <span className="err-mini">⚠ verificação com erro</span>}
+                  {nv && <button type="button" className="linkbtn" style={{ fontSize: 12.5 }} onClick={(e) => { e.stopPropagation(); marcarLida([p.id], "Marcado como lido"); }}>✓ Marcar como lida</button>}
                 </div>
-              </button>
+              </div>
             );
           })}
         </div>
@@ -969,35 +1185,51 @@ function Processo({ id, ctx, onBack }) {
   const [verificando, setVerificando] = useState(false);
   const [nota, setNota] = useState("");
   const [vistoAntes, setVistoAntes] = useState(null);
+  const [pedidos, setPedidos] = useState([]);
+  const [soNossos, setSoNossos] = useState(true);
   const [err, setErr] = useState("");
 
   const carregar = useCallback(async () => {
-    const [a, b, c] = await Promise.all([
+    const [a, b, c, d] = await Promise.all([
       sb.from("processos").select("*").eq("id", id).maybeSingle(),
       sb.from("movimentacoes").select("*").eq("processo_id", id).order("ocorrido_em", { ascending: false }).limit(400),
       sb.from("itens").select("*").eq("processo_id", id).order("numero"),
+      sb.rpc("pedidos_sala", { p_id: id, p_dias: 180 }),
     ]);
     if (a.error || !a.data) { setErr(a.error ? errMsg(a.error) : "Processo não encontrado."); return; }
-    setP(a.data); setMovs(b.data || []); setItens(c.data || []);
+    setP(a.data); setMovs(b.data || []); setItens(c.data || []); setPedidos(d.data || []);
     if (c.data && c.data.some((i) => i.participar)) setSoMeus((s) => s || false);
   }, [id]);
 
   useEffect(() => {
+    // Marca como lido com o relógio do servidor e só depois atualiza os contadores
+    // (antes o contador recarregava antes de gravar e a bolinha ficava presa).
+    const marcar = () => sb.rpc("marcar_visto", { p_ids: [id] }).then(() => ctx.carregar());
     (async () => {
       const { data } = await sb.from("vistos").select("visto_em").eq("email", email).eq("processo_id", id).maybeSingle();
       setVistoAntes(data ? data.visto_em : "1970-01-01T00:00:00Z");
-      await sb.from("vistos").upsert({ email, processo_id: id, visto_em: new Date().toISOString() }, { onConflict: "email,processo_id" });
+      await marcar();
     })();
     carregar();
+    let t = null;
     const ch = sb.channel(`proc-${id}`)
-      .on("postgres_changes", { event: "*", schema: "public", table: "movimentacoes", filter: `processo_id=eq.${id}` }, () => carregar())
+      .on("postgres_changes", { event: "*", schema: "public", table: "movimentacoes", filter: `processo_id=eq.${id}` }, () => { carregar(); clearTimeout(t); t = setTimeout(marcar, 1500); })
       .on("postgres_changes", { event: "UPDATE", schema: "public", table: "processos", filter: `id=eq.${id}` }, () => carregar())
       .subscribe();
     return () => {
+      clearTimeout(t);
       sb.removeChannel(ch);
-      sb.from("vistos").upsert({ email, processo_id: id, visto_em: new Date().toISOString() }, { onConflict: "email,processo_id" });
+      marcar();
     };
   }, [id]);
+
+  // Em processos já abertos, começa pelo que estão pedindo para nós.
+  const abaEscolhida = useRef(false);
+  useEffect(() => {
+    if (abaEscolhida.current || !p) return;
+    abaEscolhida.current = true;
+    if (ACOMPANHANDO.includes(p.etapa) && pedidos.some((x) => x.para_nos)) setAba("pedidos");
+  }, [p, pedidos]);
 
   const salvar = async (patch, msg) => {
     const { error } = await sb.from("processos").update(patch).eq("id", id);
@@ -1089,8 +1321,44 @@ function Processo({ id, ctx, onBack }) {
 
       <div className="seg" role="tablist" style={{ alignSelf: "flex-start" }}>
         <button role="tab" aria-selected={aba === "mov"} className={aba === "mov" ? "on" : ""} onClick={() => setAba("mov")}>Movimentações ({movs.filter((m) => !m.historico).length})</button>
+        <button role="tab" aria-selected={aba === "pedidos"} className={aba === "pedidos" ? "on" : ""} onClick={() => setAba("pedidos")}>O que estão pedindo{pedidos.filter((x) => x.para_nos).length ? ` (${pedidos.filter((x) => x.para_nos).length} p/ nós)` : ""}</button>
         <button role="tab" aria-selected={aba === "itens"} className={aba === "itens" ? "on" : ""} onClick={() => setAba("itens")}>Itens ({itens.length}){meus.length ? ` · ${meus.length} nossos` : ""}</button>
       </div>
+
+      {aba === "pedidos" && (
+        <div className="card">
+          <div className="card-h">
+            <h2>O que estão pedindo</h2>
+            <label className="toggle"><input type="checkbox" checked={soNossos} onChange={(e) => setSoNossos(e.target.checked)} />Só o que é para nós</label>
+          </div>
+          <p className="hint" style={{ marginBottom: 12 }}>Pedidos e decisões do pregoeiro na sala: diligências, documentos, anexos, propostas readequadas, negociação, habilitação e desclassificação. “Para nós” = cita a empresa ou um item em que temos proposta ou estamos arrematando.</p>
+          {(() => {
+            const lp = soNossos ? pedidos.filter((x) => x.para_nos) : pedidos;
+            if (!lp.length) return <div className="empty">{soNossos ? "Nenhum pedido para a nossa empresa até agora." : "Nenhum pedido do pregoeiro registrado."}</div>;
+            return (
+              <div className="tl">
+                {lp.map((x) => {
+                  const novo = vistoAntes && x.ocorrido_em > vistoAntes;
+                  return (
+                    <div key={x.mov_id} className={`tl-item${x.para_nos ? " imp" : ""}${novo ? " novo" : ""}`}>
+                      <div className="tl-ico">{x.para_nos ? "📌" : "💬"}</div>
+                      <div className="tl-body">
+                        <p style={{ marginTop: 0 }}>{x.texto}</p>
+                        <div className="tl-meta">
+                          <span>{diaLongo(diaChave(x.ocorrido_em))} · {fmtHora(x.ocorrido_em)}</span>
+                          <span className="tag">{x.autor || "Sala"}</span>
+                          {x.para_nos && <span className="tag" style={{ background: "var(--amber-soft)", color: "var(--amber)" }}>Para nós</span>}
+                          {(x.itens_citados || []).length > 0 && <span className="tag">Item {x.itens_citados.join(", ")}</span>}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })()}
+        </div>
+      )}
 
       {aba === "mov" && (
         <div className="card">
@@ -1309,6 +1577,7 @@ function Ajustes({ ctx }) {
         </div>
         <div className="stack">
           <Palavras pode={pode} notify={notify} />
+          {config && <EstadosRadar config={config} admin={admin} notify={notify} setConfig={setConfig} />}
           {admin && config && <Telegram config={config} notify={notify} setConfig={setConfig} />}
           {conta}
         </div>
@@ -1607,6 +1876,36 @@ function Palavras({ pode, notify }) {
           <button className="btn">Adicionar</button>
         </form>
       )}
+    </div>
+  );
+}
+
+function EstadosRadar({ config, admin, notify, setConfig }) {
+  const atuais = config.ufs && config.ufs.length ? config.ufs : [config.uf || "MG"];
+  const [sel, setSel] = useState(atuais);
+  const [busy, setBusy] = useState(false);
+  const mudou = [...sel].sort().join() !== [...atuais].sort().join();
+  const salvar = async () => {
+    if (!sel.length) return notify("Escolha pelo menos um estado.");
+    setBusy(true);
+    const { error } = await sb.from("config").update({ ufs: sel }).eq("id", 1);
+    setBusy(false);
+    if (error) return notify(errMsg(error));
+    setConfig((c) => ({ ...c, ufs: sel }));
+    notify("Estados do radar salvos. Valem a partir da próxima busca.");
+  };
+  return (
+    <div className="card form">
+      <div className="card-h" style={{ marginBottom: 0 }}><h2>Estados do radar</h2><span className="tag">{atuais.join(", ")}</span></div>
+      <p className="hint">O radar lê no PNCP os editais publicados nesses estados. Cada estado a mais deixa a busca de hora em hora mais demorada (o PNCP limita as consultas); se não der tempo, o restante entra na rodada seguinte.</p>
+      <div className="chips">
+        {UFS_BR.map((u) => {
+          const on = sel.includes(u);
+          return <button key={u} className={`chip${on ? " on" : ""}`} aria-pressed={on} disabled={!admin} onClick={() => setSel(on ? sel.filter((x) => x !== u) : [...sel, u])}>{u}</button>;
+        })}
+      </div>
+      {admin ? (mudou && <div className="row-inline"><button className="btn" onClick={salvar} disabled={busy}>{busy ? <span className="spin" /> : null}Salvar estados</button><button className="btn ghost" onClick={() => setSel(atuais)}>Desfazer</button></div>)
+        : <p className="hint">Só o administrador muda os estados.</p>}
     </div>
   );
 }

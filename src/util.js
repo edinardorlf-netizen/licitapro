@@ -32,6 +32,17 @@ export const ETAPAS = [
 ];
 export const etapa = (id) => ETAPAS.find((e) => e.id === id) || ETAPAS[0];
 export const ATIVAS = ["analise", "participar", "proposta", "disputa", "habilitacao"];
+// Categorias da aba Processos
+export const A_LANCAR = ["analise", "participar"]; // ⭐ Vamos participar: proposta ainda não enviada
+export const ACOMPANHANDO = ["disputa", "habilitacao"]; // sessão já aberta, com proposta nossa
+export const CATEGORIAS = [
+  { id: "vamos", nome: "⭐ Vamos participar", desc: "Proposta ainda a lançar", teste: (p) => A_LANCAR.includes(p.etapa) },
+  { id: "proposta", nome: "📨 Proposta enviada", desc: "Aguardando a abertura da sessão", teste: (p) => p.etapa === "proposta" },
+  { id: "acompanhando", nome: "👁 Acompanhando", desc: "Sessão aberta: disputa, habilitação e recursos", teste: (p) => ACOMPANHANDO.includes(p.etapa) },
+  { id: "ganhos", nome: "🏆 Ganhos", desc: "", teste: (p) => p.etapa === "ganhamos" },
+  { id: "perdidos", nome: "Perdidos / encerrados", desc: "", teste: (p) => ["perdemos", "desistimos", "encerrado"].includes(p.etapa) },
+  { id: "todos", nome: "Todos", desc: "", teste: () => true },
+];
 
 export const PAPEIS = {
   admin: "Administrador",

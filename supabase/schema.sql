@@ -449,3 +449,14 @@ alter table public.itens add column if not exists vencedor_portal text;
 alter table public.itens add column if not exists nosso_arremata boolean not null default false;
 alter table public.itens add column if not exists nosso_vence boolean not null default false;
 -- O agendamento "licita-sincronizar" chama a função licita-sinc (Acesso Rápido do portal).
+
+-- ===================== 2026-10-28: radar por estado/região/DDD, documentos, notificações =====================
+-- (aplicado pela migração radar_regioes_docs_vistos; resumo)
+-- municipios(ibge, nome, uf, mesorregiao, microrregiao, regiao_intermediaria, ddd, nome_norm) — IBGE + DDD
+-- config.ufs text[]                         — estados lidos pelo radar
+-- editais: municipio_ibge, ddd, regiao, documentos, itens, info, detalhe_em (+ trigger editais_local)
+-- marcar_visto(uuid[])                      — marca notificações como lidas com o relógio do servidor
+-- pedidos_sala(uuid, int) / resumo_acompanhando() — "o que estão pedindo" na sala, por processo
+-- regioes_uf(text[])                        — regiões e DDDs dos estados do radar
+-- limpar_descartados() + cron 'licita-limpar-descartados' (15 * * * *)
+-- cron 'licita-radar' → função licita-radar?tarefa=radar ; 'licita-radar-docs' (27,47) → ?tarefa=documentos
