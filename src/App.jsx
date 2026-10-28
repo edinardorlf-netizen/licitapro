@@ -1370,6 +1370,7 @@ function Acessos({ empresa, acessos, admin, notify, recarregar }) {
     if (!f.portal) return setErr("Escolha o portal.");
     if (!f.usuario.trim()) return setErr("Digite o usuário (login) do portal.");
     if (!f.existente && !f.senha) return setErr("Digite a senha do portal.");
+    if (f.senha && f.senha.trim() === f.usuario.trim()) return setErr("A senha está igual ao login. Provavelmente o navegador preencheu o campo sozinho: apague e digite a senha do portal.");
     setBusy(true); setErr("");
     const { error } = await sb.rpc("salvar_acesso", { p_empresa: empresa.id, p_portal: f.portal, p_usuario: f.usuario.trim(), p_senha: f.senha || null, p_obs: f.observacao || null });
     setBusy(false);
