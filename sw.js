@@ -1,5 +1,5 @@
 /* LicitaPro · arquivos do site com rede primeiro (sempre a versão nova), cache só sem internet. */
-const CACHE = "licitapro-v2";
+const CACHE = "licitapro-v3";
 const CORE = ["./", "index.html", "app.js", "config.js", "manifest.webmanifest", "icons/icon-192.png"];
 self.addEventListener("install", (e) => { e.waitUntil(caches.open(CACHE).then((c) => c.addAll(CORE)).then(() => self.skipWaiting())); });
 self.addEventListener("activate", (e) => {

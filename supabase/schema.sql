@@ -309,3 +309,93 @@ insert into public.palavras (termo, tipo) values
   ('servicos medicos', 'excluir'), ('consultas medicas', 'excluir'), ('obra', 'excluir'),
   ('pavimentacao', 'excluir'), ('transporte escolar', 'excluir')
 on conflict do nothing;
+
+-- =====================================================================
+-- Empresas (uma por CNPJ) e acessos aos portais
+-- A senha de cada portal fica no cofre do Supabase (Vault), criptografada.
+-- O app só grava; ninguém lê a senha pelo app.
+-- =====================================================================
+create table if not exists public.empresas (
+  id uuid primary key default gen_random_uuid(),
+  nome text not null check (char_length(trim(nome)) between 2 and 120),
+  cnpj text not null unique check (cnpj ~ '^\d{14}$'),
+  apelidos text not null default '',
+  ativa boolean not null default true,
+  created_at timestamptz not null default now()
+);
+create table if not exists public.acessos (
+  id uuid primary key default gen_random_uuid(),
+  empresa_id uuid not null references public.empresas(id) on delete cascade,
+  portal text not null check (portal in ('pcp','licitar','comprasgov','bll','licitacoes-e','mg','bnc','licitanet','outro')),
+  usuario text not null check (char_length(trim(usuario)) between 1 and 160),
+  senha_id uuid,
+  observacao text,
+  atualizado_em timestamptz not null default now(),
+  atualizado_por text,
+  unique (empresa_id, portal)
+);
+alter table public.processos add column if not exists empresa_id uuid references public.empresas(id) on delete set null;
+alter table public.processos add column if not exists pncp_checado_em timestamptz;
+create index if not exists processos_empresa_idx on public.processos (empresa_id);
+
+alter table public.empresas enable row level security;
+alter table public.acessos enable row level security;
+drop policy if exists "ver empresas" on public.empresas;
+create policy "ver empresas" on public.empresas for select to authenticated using (public.is_equipe());
+drop policy if exists "admin gerencia empresas" on public.empresas;
+create policy "admin gerencia empresas" on public.empresas for all to authenticated using (public.is_admin()) with check (public.is_admin());
+revoke all on public.acessos from anon, authenticated;
+grant select (id, empresa_id, portal, usuario, observacao, atualizado_em, atualizado_por) on public.acessos to authenticated;
+drop policy if exists "ver acessos" on public.acessos;
+create policy "ver acessos" on public.acessos for select to authenticated using (public.pode_editar());
+
+create or replace function public.acessos_status()
+returns table (id uuid, empresa_id uuid, portal text, usuario text, observacao text, atualizado_em timestamptz, atualizado_por text, tem_senha boolean)
+language sql stable security definer set search_path = public as $$
+  select a.id, a.empresa_id, a.portal, a.usuario, a.observacao, a.atualizado_em, a.atualizado_por, a.senha_id is not null
+  from acessos a where public.pode_editar() order by a.portal;
+$$;
+
+create or replace function public.salvar_acesso(p_empresa uuid, p_portal text, p_usuario text, p_senha text, p_obs text)
+returns uuid language plpgsql security definer set search_path = public, vault as $$
+declare
+  v_id uuid; v_senha uuid; v_email text := lower(coalesce(auth.jwt()->>'email', ''));
+begin
+  if not public.is_admin() then raise exception 'Apenas o administrador pode cadastrar acessos'; end if;
+  if not exists (select 1 from empresas where id = p_empresa) then raise exception 'Empresa não encontrada'; end if;
+  insert into acessos (empresa_id, portal, usuario, observacao, atualizado_em, atualizado_por)
+  values (p_empresa, p_portal, trim(p_usuario), nullif(trim(coalesce(p_obs, '')), ''), now(), v_email)
+  on conflict (empresa_id, portal) do update
+    set usuario = excluded.usuario, observacao = excluded.observacao, atualizado_em = now(), atualizado_por = v_email
+  returning id, senha_id into v_id, v_senha;
+  if p_senha is not null and length(p_senha) > 0 then
+    if v_senha is null then
+      v_senha := vault.create_secret(p_senha, 'licitapro-acesso-' || v_id::text, 'Senha de portal (LicitaPro)');
+      update acessos set senha_id = v_senha where id = v_id;
+    else
+      perform vault.update_secret(v_senha, p_senha);
+    end if;
+  end if;
+  return v_id;
+end $$;
+
+create or replace function public.remover_acesso(p_id uuid)
+returns void language plpgsql security definer set search_path = public, vault as $$
+declare v_senha uuid;
+begin
+  if not public.is_admin() then raise exception 'Apenas o administrador pode remover acessos'; end if;
+  select senha_id into v_senha from acessos where id = p_id;
+  delete from acessos where id = p_id;
+  if v_senha is not null then delete from vault.secrets where id = v_senha; end if;
+end $$;
+
+revoke execute on function public.acessos_status() from public, anon;
+revoke execute on function public.salvar_acesso(uuid, text, text, text, text) from public, anon;
+revoke execute on function public.remover_acesso(uuid) from public, anon;
+grant execute on function public.acessos_status() to authenticated;
+grant execute on function public.salvar_acesso(uuid, text, text, text, text) to authenticated;
+grant execute on function public.remover_acesso(uuid) to authenticated;
+
+do $$ begin
+  begin alter publication supabase_realtime add table public.empresas; exception when others then null; end;
+end $$;

@@ -65,6 +65,7 @@ button{cursor:pointer}
 .btn{text-decoration:none;border:0;border-radius:10px;height:40px;padding:0 16px;font-weight:700;background:var(--accent);color:#fff;display:inline-flex;align-items:center;gap:7px;white-space:nowrap}
 .btn:hover{background:var(--accent-ink)}
 .btn:disabled{opacity:.6;cursor:default}
+.input:disabled{background:var(--line-2);color:var(--ink-2);cursor:default;opacity:1;-webkit-text-fill-color:var(--ink-2)}
 .btn.ghost{background:var(--surface);color:var(--ink-2);border:1px solid var(--line);font-weight:600}
 .btn.ghost:hover{background:var(--line-2)}
 .btn.sm{height:32px;padding:0 11px;font-size:12.5px;border-radius:9px}
@@ -82,6 +83,10 @@ textarea.input{height:auto;min-height:80px;padding:10px 11px;resize:vertical}
 .field{display:flex;flex-direction:column;gap:5px;min-width:0}
 .field>label,.flabel{font-size:12px;font-weight:600;color:var(--ink-2)}
 .fgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+.emp{border:1px solid var(--line);border-radius:12px;padding:12px 14px;display:flex;flex-direction:column;gap:10px}
+.emp-h{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap}
+.emp-body{display:flex;flex-direction:column;gap:10px;border-top:1px solid var(--line);padding-top:10px}
+.acc-form{display:flex;flex-direction:column;gap:10px;background:var(--bg, #f6f7f9);border-radius:10px;padding:12px}
 .form{display:flex;flex-direction:column;gap:12px}
 .err{color:var(--red);font-size:13px;font-weight:500;margin:0}
 .hint{font-size:12.5px;color:var(--muted);margin:0}
@@ -378,6 +383,29 @@ function lerHash() {
   return { tab: "inicio", proc: null };
 }
 
+/* No celular o LicitaPro é só para monitorar e buscar editais; o resto fica no computador. */
+const MQ_CELULAR = "(max-width: 880px)";
+function useCelular() {
+  const get = () => { try { return window.matchMedia(MQ_CELULAR).matches; } catch (e) { return false; } };
+  const [cel, setCel] = useState(get);
+  useEffect(() => {
+    let mq; try { mq = window.matchMedia(MQ_CELULAR); } catch (e) { return; }
+    const on = () => setCel(mq.matches);
+    if (mq.addEventListener) mq.addEventListener("change", on); else mq.addListener(on);
+    return () => { if (mq.removeEventListener) mq.removeEventListener("change", on); else mq.removeListener(on); };
+  }, []);
+  return cel;
+}
+
+const fmtCnpj = (c) => { const d = String(c || "").replace(/\D/g, ""); return d.length === 14 ? d.replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, "$1.$2.$3/$4-$5") : c || ""; };
+function cnpjValido(c) {
+  const d = String(c || "").replace(/\D/g, "");
+  if (d.length !== 14 || /^(\d)\1+$/.test(d)) return false;
+  const calc = (n) => { let s = 0, p = n - 7; for (let i = 0; i < n; i++) { s += Number(d[i]) * p--; if (p < 2) p = 9; } const r = s % 11; return r < 2 ? 0 : 11 - r; };
+  return calc(12) === Number(d[12]) && calc(13) === Number(d[13]);
+}
+const nomeCurto = (e) => (e ? (String(e.apelidos || "").split(",")[0].trim() || e.nome) : "");
+
 function Painel({ session, papel, notify }) {
   const inicial = lerHash();
   const [tab, setTab] = useState(inicial.tab);
@@ -386,21 +414,26 @@ function Painel({ session, papel, notify }) {
   const [naoVistas, setNaoVistas] = useState({});
   const [equipe, setEquipe] = useState([]);
   const [config, setConfig] = useState(null);
+  const [empresas, setEmpresas] = useState([]);
+  const celular = useCelular();
   const email = session.user.email.toLowerCase();
-  const pode = papel === "admin" || papel === "equipe";
+  const podeEquipe = papel === "admin" || papel === "equipe";
+  const pode = podeEquipe && !celular; // edição completa só no computador
   const eu = equipe.find((p) => p.email === email);
 
   const carregar = useCallback(async () => {
-    const [p, nv, eq, cf] = await Promise.all([
-      sb.from("processos").select("id,orgao,municipio,numero,objeto,portal,etapa,responsavel,data_sessao,prazo_impugnacao,prazo_esclarecimento,situacao_pncp,situacao_portal,link_origem,controle_pncp,erro,ultima_verificacao,created_at,valor_estimado").order("data_sessao", { ascending: true, nullsFirst: false }),
+    const [p, nv, eq, cf, em] = await Promise.all([
+      sb.from("processos").select("id,orgao,municipio,numero,objeto,portal,etapa,responsavel,data_sessao,prazo_impugnacao,prazo_esclarecimento,situacao_pncp,situacao_portal,link_origem,controle_pncp,erro,ultima_verificacao,created_at,valor_estimado,empresa_id").order("data_sessao", { ascending: true, nullsFirst: false }),
       sb.rpc("nao_vistas"),
       sb.from("equipe").select("*").order("nome"),
       sb.from("config").select("*").eq("id", 1).single(),
+      sb.from("empresas").select("*").order("nome"),
     ]);
     if (!p.error) setProcs(p.data);
     if (!nv.error) setNaoVistas(Object.fromEntries((nv.data || []).map((r) => [r.processo_id, r])));
     if (!eq.error) setEquipe(eq.data);
     if (!cf.error) setConfig(cf.data);
+    if (!em.error) setEmpresas(em.data || []);
   }, []);
 
   useEffect(() => {
@@ -432,7 +465,7 @@ function Painel({ session, papel, notify }) {
   const abrir = (id) => { setTab("processos"); setProcId(id); };
   const ir = (t) => { setProcId(null); setTab(t); };
   const totalNV = Object.values(naoVistas).reduce((a, r) => a + Number(r.importantes || 0), 0);
-  const ctx = { session, email, papel, pode, equipe, config, procs, naoVistas, carregar, notify, abrir, ir, setConfig };
+  const ctx = { session, email, papel, pode, podeEquipe, celular, equipe, config, empresas, procs, naoVistas, carregar, notify, abrir, ir, setConfig };
 
   let tela;
   if (procId) tela = <Processo key={procId} id={procId} ctx={ctx} onBack={() => { setProcId(null); carregar(); }} />;
@@ -500,8 +533,8 @@ function Inicio({ ctx }) {
   return (
     <div className="stack">
       <div className="top"><div><h1>Olá{eu && eu.nome ? `, ${eu.nome.split(" ")[0]}` : ""}</h1><p>Resumo das licitações da equipe</p></div></div>
-      {config && !config.empresa_nome && ctx.papel === "admin" && (
-        <div className="banner warn"><span>Cadastre o nome da empresa em <b>Ajustes</b>. Assim o robô reconhece quando o pregoeiro citar vocês e quando vocês vencerem um item.</span></div>
+      {!ctx.empresas.length && ctx.papel === "admin" && !ctx.celular && (
+        <div className="banner warn"><span>Cadastre a empresa em <b>Ajustes → Empresas</b>. Assim o robô reconhece quando o pregoeiro citar vocês e quando vocês vencerem um item.</span></div>
       )}
       <div className="grid3">
         <button className="card kpi" style={{ border: 0, textAlign: "left" }} onClick={() => ir("agenda")}><small>Disputas hoje</small><b className="num">{hojeN}</b><small>{proximas.length} nos próximos 7 dias</small></button>
@@ -553,7 +586,8 @@ const icoMov = (m) => ({ chat: "💬", documento: "📄", resultado: "🏁", ite
    Radar de editais
    ============================================================ */
 function Radar({ ctx }) {
-  const { pode, notify, abrir } = ctx;
+  const { notify, abrir } = ctx;
+  const pode = ctx.podeEquipe; // buscar e marcar editais vale também no celular
   const [modo, setModo] = useState("relevantes");
   const [port, setPort] = useState("todos");
   const [q, setQ] = useState("");
@@ -587,7 +621,7 @@ function Radar({ ctx }) {
     setOcupado(e.id);
     try {
       const r = await chamarRobo({ acao: "cadastrar", entrada: e.controle_pncp });
-      notify(r.existente ? "Esse processo já estava cadastrado" : "Processo cadastrado. O robô já está acompanhando.");
+      notify(r.existente ? "Esse processo já estava cadastrado" : ctx.empresas.filter((x) => x.ativa).length > 1 ? "Processo cadastrado. Escolha a empresa que vai participar." : "Processo cadastrado. O robô já está acompanhando.");
       ctx.carregar();
       abrir(r.id);
     } catch (err) { notify(errMsg(err)); }
@@ -673,12 +707,16 @@ function Radar({ ctx }) {
    Processos
    ============================================================ */
 function Processos({ ctx }) {
-  const { procs, naoVistas, abrir, pode, equipe } = ctx;
+  const { procs, naoVistas, abrir, pode, equipe, empresas } = ctx;
   const [filtro, setFiltro] = useState("ativos");
+  const [emp, setEmp] = useState("todas");
   const [q, setQ] = useState("");
   const [novo, setNovo] = useState(false);
+  const variasEmpresas = empresas.length > 1;
+  const empDe = (id) => empresas.find((e) => e.id === id);
   const nomeDe = (e) => (equipe.find((p) => p.email === e) || {}).nome || (e ? e.split("@")[0] : "—");
   const lista = (procs || []).filter((p) =>
+    (emp === "todas" || (emp === "sem" ? !p.empresa_id : p.empresa_id === emp)) &&
     (filtro === "todos" || (filtro === "ativos" ? ATIVAS.includes(p.etapa) : filtro === "ganhos" ? p.etapa === "ganhamos" : ["perdemos", "desistimos"].includes(p.etapa))) &&
     (!q || `${p.orgao} ${p.municipio} ${p.numero} ${p.objeto}`.toLowerCase().includes(q.toLowerCase())));
   const ordenada = [...lista].sort((a, b) => {
@@ -699,6 +737,13 @@ function Processos({ ctx }) {
         </div>
         <input id="proc-busca" className="input" style={{ maxWidth: 300 }} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar órgão, número ou objeto" aria-label="Buscar processos" />
       </div>
+      {variasEmpresas && (
+        <div className="chips">
+          {[["todas", "Todas as empresas"], ...empresas.map((e) => [e.id, nomeCurto(e)]), ["sem", "Sem empresa"]].map(([k, l]) => (
+            <button key={k} className={`chip${emp === k ? " on" : ""}`} onClick={() => setEmp(k)}>{l}</button>
+          ))}
+        </div>
+      )}
       {procs === null ? <div className="card empty">Carregando…</div> : !ordenada.length ? (
         <div className="card empty"><b>Nenhum processo aqui</b>{pode ? "Use “Acompanhar” no Radar ou cadastre pelo link do processo." : "Quando a equipe cadastrar processos, eles aparecem aqui."}</div>
       ) : (
@@ -712,7 +757,7 @@ function Processos({ ctx }) {
                   {nv && <span className={`badge${Number(nv.importantes) ? "" : " soft"}`} title="Movimentações novas">{nv.qtd}</span>}
                 </div>
                 <div className="hint clamp2" style={{ color: "var(--ink-2)" }}>{p.objeto}</div>
-                <div className="row-inline"><EtapaTag id={p.etapa} /><PortalTag k={p.portal} /></div>
+                <div className="row-inline"><EtapaTag id={p.etapa} /><PortalTag k={p.portal} />{variasEmpresas && <span className="tag">{p.empresa_id ? nomeCurto(empDe(p.empresa_id)) : "Sem empresa"}</span>}</div>
                 <div className="estado">
                   {p.data_sessao ? <>Sessão {fmtDH(p.data_sessao)} · <b>{falta(p.data_sessao)}</b></> : "Data da sessão não informada"}
                   {(p.situacao_portal || p.situacao_pncp) && <div className="hint">{p.situacao_portal || p.situacao_pncp}</div>}
@@ -732,15 +777,18 @@ function Processos({ ctx }) {
 }
 
 function NovoProcesso({ ctx, onClose }) {
+  const ativas = ctx.empresas.filter((x) => x.ativa);
   const [v, setV] = useState("");
+  const [empId, setEmpId] = useState(ativas.length === 1 ? ativas[0].id : "");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const go = async (e) => {
     e.preventDefault();
     if (!v.trim()) return setErr("Cole o link ou o número do processo.");
+    if (ativas.length > 1 && !empId) return setErr("Escolha a empresa que vai participar.");
     setBusy(true); setErr("");
     try {
-      const r = await chamarRobo({ acao: "cadastrar", entrada: v.trim() });
+      const r = await chamarRobo({ acao: "cadastrar", entrada: v.trim(), empresa_id: empId || null });
       ctx.notify(r.existente ? "Esse processo já estava cadastrado" : "Processo cadastrado. O robô já está acompanhando.");
       ctx.carregar(); onClose(); ctx.abrir(r.id);
     } catch (e2) { setErr(errMsg(e2)); }
@@ -754,6 +802,13 @@ function NovoProcesso({ ctx, onClose }) {
           <label htmlFor="np-link">Link ou número do processo</label>
           <textarea id="np-link" className="input" rows={3} value={v} onChange={(e) => setV(e.target.value)} placeholder="https://www.portaldecompraspublicas.com.br/processos/MG/…" />
         </div>
+        {ativas.length > 1 && (
+          <div className="field"><label htmlFor="np-emp">Empresa que vai participar</label>
+            <select id="np-emp" className="input" value={empId} onChange={(e) => setEmpId(e.target.value)}>
+              <option value="">Escolha…</option>
+              {ativas.map((x) => <option key={x.id} value={x.id}>{x.nome} · {fmtCnpj(x.cnpj)}</option>)}
+            </select></div>
+        )}
         <div className="hint">
           Aceita:
           <ul className="steps" style={{ marginTop: 6, fontSize: 12.5 }}>
@@ -874,7 +929,13 @@ function Processo({ id, ctx, onBack }) {
               <option value="">Ninguém</option>
               {equipe.filter((x) => x.ativo).map((x) => <option key={x.email} value={x.email}>{x.nome || x.email}</option>)}
             </select></div>
+          <div className="field"><label htmlFor="pe-emp">Empresa participante</label>
+            <select id="pe-emp" className="input" value={p.empresa_id || ""} disabled={!pode} onChange={(e) => salvar({ empresa_id: e.target.value || null }, "Empresa atualizada")}>
+              <option value="">Nenhuma marcada</option>
+              {ctx.empresas.filter((x) => x.ativa || x.id === p.empresa_id).map((x) => <option key={x.id} value={x.id}>{nomeCurto(x)} · {fmtCnpj(x.cnpj)}</option>)}
+            </select></div>
         </div>
+        {ctx.celular && <p className="hint">No celular o processo fica só para acompanhar. Etapa, empresa, itens e anotações são editados pelo computador.</p>}
         <div className="row-inline">
           <button className="btn ghost sm" onClick={verificar} disabled={verificando}>{verificando ? <span className="spin" /> : <Icon name="refresh" size={15} />}Verificar agora</button>
           {p.link_origem && <a className="btn ghost sm" href={p.link_origem} target="_blank" rel="noopener noreferrer"><Icon name="ext" size={14} />Abrir no portal</a>}
@@ -891,10 +952,12 @@ function Processo({ id, ctx, onBack }) {
 
       {aba === "mov" && (
         <div className="card">
-          <form className="row-inline" onSubmit={anotar} style={{ marginBottom: 14, flexWrap: "nowrap" }}>
-            <input id="pe-nota" className="input" value={nota} onChange={(e) => setNota(e.target.value)} placeholder="Escrever uma anotação para a equipe" aria-label="Anotação" />
-            <button className="btn" disabled={!nota.trim()}>Anotar</button>
-          </form>
+          {!ctx.celular && (
+            <form className="row-inline" onSubmit={anotar} style={{ marginBottom: 14, flexWrap: "nowrap" }}>
+              <input id="pe-nota" className="input" value={nota} onChange={(e) => setNota(e.target.value)} placeholder="Escrever uma anotação para a equipe" aria-label="Anotação" />
+              <button className="btn" disabled={!nota.trim()}>Anotar</button>
+            </form>
+          )}
           <div className="chips" style={{ marginBottom: 12 }}>
             {[["todas", "Todas"], ["importantes", "Importantes"], ["chat", "Chat do pregão"], ["docs", "Documentos"], ["equipe", "Anotações"]].map(([k, l]) => <button key={k} className={`chip${filtroMov === k ? " on" : ""}`} onClick={() => setFiltroMov(k)}>{l}</button>)}
           </div>
@@ -1069,25 +1132,201 @@ function Agenda({ ctx }) {
 function Ajustes({ ctx }) {
   const { papel, pode, config, equipe, notify, carregar, email, setConfig } = ctx;
   const admin = papel === "admin";
+  const conta = (
+    <div className="card form">
+      <div className="card-h" style={{ marginBottom: 0 }}><h2>Sua conta</h2></div>
+      <p className="hint">{email} · {PAPEIS[papel]}</p>
+      <button className="btn ghost" style={{ alignSelf: "flex-start" }} onClick={() => sb.auth.signOut()}><Icon name="logout" size={16} />Sair</button>
+    </div>
+  );
+  if (ctx.celular) {
+    return (
+      <div className="stack">
+        <div className="top"><div><h1>Ajustes</h1><p>Alerta e conta neste celular</p></div></div>
+        <div className="banner info"><span>Empresas, acessos aos portais, equipe e palavras-chave são configurados pelo <b>computador</b>.</span></div>
+        <SomAlerta />
+        {conta}
+      </div>
+    );
+  }
   return (
     <div className="stack">
-      <div className="top"><div><h1>Ajustes</h1><p>Empresa, equipe, palavras-chave e avisos</p></div></div>
+      <div className="top"><div><h1>Ajustes</h1><p>Empresas, acessos, equipe, palavras-chave e avisos</p></div></div>
+      <Empresas ctx={ctx} />
       <div className="grid2">
         <div className="stack">
-          {config && <Empresa config={config} admin={admin} notify={notify} setConfig={setConfig} />}
           <Equipe equipe={equipe} admin={admin} notify={notify} carregar={carregar} email={email} />
+          <SomAlerta />
         </div>
         <div className="stack">
           <Palavras pode={pode} notify={notify} />
           {admin && config && <Telegram config={config} notify={notify} setConfig={setConfig} />}
-          <SomAlerta />
-          <div className="card form">
-            <div className="card-h" style={{ marginBottom: 0 }}><h2>Sua conta</h2></div>
-            <p className="hint">{email} · {PAPEIS[papel]}</p>
-            <button className="btn ghost" style={{ alignSelf: "flex-start" }} onClick={() => sb.auth.signOut()}><Icon name="logout" size={16} />Sair</button>
-          </div>
+          {conta}
         </div>
       </div>
+    </div>
+  );
+}
+
+/* ---------- Empresas (uma por CNPJ) e acessos aos portais ---------- */
+const PORTAIS_ACESSO = ["pcp", "licitar", "comprasgov", "bll", "licitacoes-e", "mg", "bnc", "licitanet", "outro"];
+
+function Empresas({ ctx }) {
+  const { empresas, papel, notify, carregar } = ctx;
+  const admin = papel === "admin";
+  const [acessos, setAcessos] = useState([]);
+  const [aberta, setAberta] = useState(null);
+  const [form, setForm] = useState(null);
+  const carregarAcessos = useCallback(async () => {
+    const { data, error } = await sb.rpc("acessos_status");
+    if (!error) setAcessos(data || []);
+  }, []);
+  useEffect(() => { carregarAcessos(); }, [carregarAcessos]);
+  useEffect(() => { if (aberta === null && empresas.length === 1) setAberta(empresas[0].id); }, [empresas]);
+
+  return (
+    <div className="card">
+      <div className="card-h">
+        <h2>Empresas e acessos aos portais</h2>
+        {admin && <button className="btn sm" onClick={() => setForm({})}><Icon name="plus" size={15} />Nova empresa</button>}
+      </div>
+      <p className="hint" style={{ marginBottom: 12 }}>
+        Cada empresa é cadastrada pelo CNPJ, com o login dela em cada portal. As senhas ficam guardadas criptografadas no cofre do banco:
+        depois de salvas, ninguém consegue vê-las pelo app, nem o administrador. Elas serão usadas pelo robô de lances quando ele estiver pronto.
+      </p>
+      {!empresas.length ? <div className="empty"><b>Nenhuma empresa cadastrada</b>{admin ? "Use “Nova empresa”." : "O administrador cadastra as empresas."}</div> : (
+        <div className="stack" style={{ gap: 10 }}>
+          {empresas.map((e) => {
+            const meus = acessos.filter((a) => a.empresa_id === e.id);
+            const open = aberta === e.id;
+            return (
+              <div key={e.id} className="emp">
+                <div className="emp-h">
+                  <div style={{ minWidth: 0 }}>
+                    <b>{e.nome}</b>{!e.ativa && <span className="tag" style={{ marginLeft: 8 }}>Inativa</span>}
+                    <div className="hint">CNPJ {fmtCnpj(e.cnpj)}{e.apelidos ? ` · também aparece como: ${e.apelidos}` : ""}</div>
+                  </div>
+                  <div className="row-inline" style={{ flexWrap: "nowrap" }}>
+                    {ctx.podeEquipe && <button className="btn ghost sm" onClick={() => setAberta(open ? null : e.id)} aria-expanded={open}>Acessos ({meus.length})</button>}
+                    {admin && <button className="btn ghost sm" onClick={() => setForm(e)}>Editar</button>}
+                  </div>
+                </div>
+                {open && <Acessos empresa={e} acessos={meus} admin={admin} notify={notify} recarregar={carregarAcessos} />}
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {form && <EmpresaForm emp={form} notify={notify} onClose={() => setForm(null)} onSaved={(id) => { setForm(null); carregar(); if (id) setAberta(id); }} />}
+    </div>
+  );
+}
+
+function EmpresaForm({ emp, notify, onClose, onSaved }) {
+  const novo = !emp.id;
+  const [f, setF] = useState({ nome: emp.nome || "", cnpj: fmtCnpj(emp.cnpj || ""), apelidos: emp.apelidos || "", ativa: emp.ativa !== false });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const salvar = async (ev) => {
+    ev.preventDefault();
+    const cnpj = f.cnpj.replace(/\D/g, "");
+    if (f.nome.trim().length < 2) return setErr("Digite a razão social.");
+    if (!cnpjValido(cnpj)) return setErr("CNPJ inválido. Confira os 14 números.");
+    const apelidos = f.apelidos.split(/[,;\n]+/).map((s) => s.trim()).filter(Boolean).join(", ");
+    setBusy(true); setErr("");
+    const row = { nome: f.nome.trim(), cnpj, apelidos, ativa: f.ativa };
+    const r = novo ? await sb.from("empresas").insert(row).select("id").single() : await sb.from("empresas").update(row).eq("id", emp.id).select("id").single();
+    setBusy(false);
+    if (r.error) return setErr(/duplicate|unique/i.test(r.error.message) ? "Já existe uma empresa com esse CNPJ." : errMsg(r.error));
+    notify(novo ? "Empresa cadastrada. Agora adicione os acessos aos portais." : "Empresa atualizada");
+    onSaved(r.data && r.data.id);
+  };
+  return (
+    <div className="sheet-bg" onClick={onClose}>
+      <form className="sheet" onClick={(e) => e.stopPropagation()} onSubmit={salvar} noValidate role="dialog" aria-modal="true" aria-label={novo ? "Nova empresa" : "Editar empresa"}>
+        <div className="sheet-h"><h2>{novo ? "Nova empresa" : "Editar empresa"}</h2><button type="button" className="iconbtn" onClick={onClose} aria-label="Fechar"><Icon name="x" size={18} /></button></div>
+        <div className="field"><label htmlFor="ef-nome">Razão social</label><input id="ef-nome" className="input" value={f.nome} onChange={(e) => setF({ ...f, nome: e.target.value })} placeholder="Ex.: Miramed Comércio Ltda" /></div>
+        <div className="field"><label htmlFor="ef-cnpj">CNPJ</label><input id="ef-cnpj" className="input num" inputMode="numeric" value={f.cnpj} onChange={(e) => setF({ ...f, cnpj: e.target.value })} onBlur={() => setF((x) => ({ ...x, cnpj: fmtCnpj(x.cnpj) }))} placeholder="00.000.000/0000-00" /></div>
+        <div className="field"><label htmlFor="ef-ap">Outros nomes usados nos portais <span style={{ fontWeight: 400, color: "var(--muted)" }}>(separe por vírgula)</span></label><input id="ef-ap" className="input" value={f.apelidos} onChange={(e) => setF({ ...f, apelidos: e.target.value })} placeholder="Ex.: Miramed" /></div>
+        <p className="hint" style={{ margin: 0 }}>O robô usa a razão social, esses nomes e o CNPJ para avisar quando o pregoeiro citar a empresa e quando ela vencer um item.</p>
+        {!novo && <label className="toggle"><input type="checkbox" checked={f.ativa} onChange={(e) => setF({ ...f, ativa: e.target.checked })} />Empresa ativa em licitações</label>}
+        {err && <p className="err">{err}</p>}
+        <button className="btn block" disabled={busy}>{busy ? "Salvando…" : "Salvar"}</button>
+      </form>
+    </div>
+  );
+}
+
+function Acessos({ empresa, acessos, admin, notify, recarregar }) {
+  const vazio = { portal: "", usuario: "", senha: "", observacao: "" };
+  const [f, setF] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const usados = acessos.map((a) => a.portal);
+  const editar = (a) => { setErr(""); setF({ portal: a.portal, usuario: a.usuario, senha: "", observacao: a.observacao || "", existente: true, tem_senha: a.tem_senha }); };
+  const salvar = async (ev) => {
+    ev.preventDefault();
+    if (!f.portal) return setErr("Escolha o portal.");
+    if (!f.usuario.trim()) return setErr("Digite o usuário (login) do portal.");
+    if (!f.existente && !f.senha) return setErr("Digite a senha do portal.");
+    setBusy(true); setErr("");
+    const { error } = await sb.rpc("salvar_acesso", { p_empresa: empresa.id, p_portal: f.portal, p_usuario: f.usuario.trim(), p_senha: f.senha || null, p_obs: f.observacao || null });
+    setBusy(false);
+    if (error) return setErr(errMsg(error));
+    notify(f.senha ? "Acesso salvo. A senha foi guardada criptografada." : "Acesso atualizado");
+    setF(null); recarregar();
+  };
+  const remover = async (a) => {
+    const { error } = await sb.rpc("remover_acesso", { p_id: a.id });
+    if (error) return notify(errMsg(error));
+    notify("Acesso removido e senha apagada do cofre"); recarregar();
+  };
+  return (
+    <div className="emp-body">
+      {!acessos.length ? <div className="hint">Nenhum acesso cadastrado para esta empresa.</div> : (
+        <div className="list">
+          {acessos.map((a) => (
+            <div key={a.id} className="lrow">
+              <div className="lmain">
+                <span className="lt"><PortalTag k={a.portal} /> {portal(a.portal).nome}</span>
+                <span className="ls">Usuário: <b>{a.usuario}</b> · {a.tem_senha ? "🔒 senha guardada" : "⚠ sem senha"}{a.observacao ? ` · ${a.observacao}` : ""}</span>
+                <span className="ls">Atualizado {fmtDH(a.atualizado_em)}{a.atualizado_por ? ` por ${a.atualizado_por.split("@")[0]}` : ""}</span>
+              </div>
+              {admin && (
+                <div className="row-inline" style={{ flexWrap: "nowrap" }}>
+                  <button className="btn ghost sm" onClick={() => editar(a)}>Alterar</button>
+                  <ConfirmX label="Remover" confirmLabel="Remover?" onConfirm={() => remover(a)} />
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      {admin && !f && usados.length < PORTAIS_ACESSO.length && (
+        <button className="btn ghost sm" style={{ alignSelf: "flex-start" }} onClick={() => { setErr(""); setF({ ...vazio }); }}><Icon name="plus" size={15} />Adicionar acesso</button>
+      )}
+      {admin && f && (
+        <form className="acc-form" onSubmit={salvar} noValidate autoComplete="off">
+          <div className="fgrid">
+            <div className="field"><label htmlFor={`ac-p-${empresa.id}`}>Portal</label>
+              <select id={`ac-p-${empresa.id}`} className="input" value={f.portal} disabled={f.existente} onChange={(e) => setF({ ...f, portal: e.target.value })}>
+                <option value="">Escolha…</option>
+                {PORTAIS_ACESSO.filter((k) => f.existente ? k === f.portal : !usados.includes(k)).map((k) => <option key={k} value={k}>{portal(k).nome}</option>)}
+              </select></div>
+            <div className="field"><label htmlFor={`ac-u-${empresa.id}`}>Usuário / login</label>
+              <input id={`ac-u-${empresa.id}`} name={`licitapro-usuario-${empresa.id}`} className="input" autoComplete="off" value={f.usuario} onChange={(e) => setF({ ...f, usuario: e.target.value })} /></div>
+            <div className="field"><label htmlFor={`ac-s-${empresa.id}`}>{f.existente ? "Nova senha (deixe em branco para manter)" : "Senha do portal"}</label>
+              <input id={`ac-s-${empresa.id}`} name={`licitapro-senha-${empresa.id}`} className="input" type="password" autoComplete="new-password" value={f.senha} onChange={(e) => setF({ ...f, senha: e.target.value })} /></div>
+            <div className="field"><label htmlFor={`ac-o-${empresa.id}`}>Observação <span style={{ fontWeight: 400, color: "var(--muted)" }}>(opcional)</span></label>
+              <input id={`ac-o-${empresa.id}`} className="input" value={f.observacao} onChange={(e) => setF({ ...f, observacao: e.target.value })} placeholder="Ex.: certificado digital do Marcio" /></div>
+          </div>
+          {err && <p className="err">{err}</p>}
+          <div className="row-inline">
+            <button className="btn sm" disabled={busy}>{busy ? "Salvando…" : "Salvar acesso"}</button>
+            <button type="button" className="btn ghost sm" onClick={() => setF(null)}>Cancelar</button>
+          </div>
+        </form>
+      )}
     </div>
   );
 }
@@ -1130,28 +1369,6 @@ function SomAlerta() {
         <button type="button" className="btn ghost sm" onClick={tocarAlerta}>Testar som</button>
       </div>
     </div>
-  );
-}
-
-function Empresa({ config, admin, notify, setConfig }) {
-  const [f, setF] = useState({ empresa_nome: config.empresa_nome || "", empresa_cnpj: config.empresa_cnpj || "" });
-  const salvar = async (e) => {
-    e.preventDefault();
-    const patch = { empresa_nome: f.empresa_nome.trim(), empresa_cnpj: f.empresa_cnpj.replace(/\D/g, ""), atualizado_em: new Date().toISOString() };
-    const { error } = await sb.from("config").update(patch).eq("id", 1);
-    if (error) return notify(errMsg(error));
-    setConfig((c) => ({ ...c, ...patch })); notify("Dados da empresa salvos");
-  };
-  return (
-    <form className="card form" onSubmit={salvar} noValidate>
-      <div className="card-h" style={{ marginBottom: 0 }}><h2>Empresa</h2></div>
-      <p className="hint">Usado para avisar quando o pregoeiro citar a empresa no chat e quando vocês vencerem um item.</p>
-      <div className="fgrid">
-        <div className="field"><label htmlFor="em-nome">Nomes da empresa nos portais <span style={{ fontWeight: 400, color: "var(--muted)" }}>(separe por vírgula)</span></label><input id="em-nome" className="input" disabled={!admin} placeholder="Ex.: Mirafarma, Miramed" value={f.empresa_nome} onChange={(e) => setF({ ...f, empresa_nome: e.target.value })} /></div>
-        <div className="field"><label htmlFor="em-cnpj">CNPJ</label><input id="em-cnpj" className="input num" inputMode="numeric" disabled={!admin} value={f.empresa_cnpj} onChange={(e) => setF({ ...f, empresa_cnpj: e.target.value })} /></div>
-      </div>
-      {admin && <button className="btn" style={{ alignSelf: "flex-start" }}>Salvar</button>}
-    </form>
   );
 }
 

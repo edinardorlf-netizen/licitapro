@@ -225,13 +225,22 @@ function proxima(p: any): number {
   return 180;
 }
 
+// Nomes e CNPJs que identificam "nós" num processo: a empresa do processo,
+// ou todas as empresas ativas se o processo não tiver empresa marcada.
+async function identificacao(p: any): Promise<string[]> {
+  let q = db.from("empresas").select("nome,cnpj,apelidos").eq("ativa", true);
+  if (p.empresa_id) q = db.from("empresas").select("nome,cnpj,apelidos").eq("id", p.empresa_id);
+  const { data } = await q;
+  const out: string[] = [];
+  for (const e of data || []) {
+    out.push(norm(e.nome).trim(), String(e.cnpj || "").replace(/\D/g, ""));
+    for (const a of String(e.apelidos || "").split(/[,;\n]+/)) out.push(norm(a).trim());
+  }
+  return [...new Set(out.filter((e) => e.length > 3))];
+}
+
 async function verificarProcesso(p: any, opts: { inicial?: boolean } = {}) {
-  const { cfg } = await carregarConfig();
-  // Vários nomes separados por vírgula (ex.: "Mirafarma, Miramed") + CNPJ só com dígitos.
-  const empresa = [
-    ...String(cfg.empresa_nome || "").split(/[,;\n]+/).map((n) => norm(n).trim()),
-    (cfg.empresa_cnpj || "").replace(/\D/g, ""),
-  ].filter((e) => e.length > 3);
+  const empresa = await identificacao(p);
   const inicial = !!opts.inicial;
   const movs: Mov[] = [];
   const upd: Record<string, unknown> = {};
@@ -493,7 +502,11 @@ async function acompanhar(deadline: number) {
 }
 
 // ---------- CADASTRAR ----------
-async function cadastrar(entrada: string, email: string | null) {
+async function cadastrar(entrada: string, email: string | null, empresaId: string | null = null) {
+  if (!empresaId) {
+    const { data: ativas } = await db.from("empresas").select("id").eq("ativa", true).limit(2);
+    if (ativas && ativas.length === 1) empresaId = ativas[0].id;
+  }
   const txt = (entrada || "").trim();
   if (!txt) throw new Error("Cole o link do processo ou o número de controle do PNCP.");
   let cnpj: string | null = null, ano: number | null = null, seq: number | null = null;
@@ -558,6 +571,7 @@ async function cadastrar(entrada: string, email: string | null) {
     valor_estimado: det?.valorTotalEstimado ?? edital?.valor_estimado ?? null,
     data_sessao: brt(det?.dataEncerramentoProposta) || edital?.encerramento_propostas || null,
     situacao_pncp: det?.situacaoCompraNome || null,
+    empresa_id: empresaId,
     responsavel: email,
     created_by: email || "robô",
   };
@@ -604,7 +618,8 @@ Deno.serve(async (req) => {
     const body = await req.json().catch(() => ({}));
     if (body.acao === "cadastrar") {
       if (membro.papel === "acompanha") return json({ erro: "Seu perfil só acompanha disputas. Peça a alguém da equipe para cadastrar." }, 403);
-      return json(await cadastrar(String(body.entrada || ""), email));
+      const emp = typeof body.empresa_id === "string" && /^[0-9a-f-]{36}$/i.test(body.empresa_id) ? body.empresa_id : null;
+      return json(await cadastrar(String(body.entrada || ""), email, emp));
     }
     if (body.acao === "verificar") {
       const { data: p } = await db.from("processos").select("*").eq("id", body.id).single();
