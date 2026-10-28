@@ -399,3 +399,34 @@ grant execute on function public.remover_acesso(uuid) to authenticated;
 do $$ begin
   begin alter publication supabase_realtime add table public.empresas; exception when others then null; end;
 end $$;
+
+-- =====================================================================
+-- Puxar "Seus Processos" do Portal de Compras Públicas com o login da empresa
+-- =====================================================================
+alter table public.acessos add column if not exists sinc_em timestamptz;
+alter table public.acessos add column if not exists sinc_ok boolean;
+alter table public.acessos add column if not exists sinc_msg text;
+grant select (sinc_em, sinc_ok, sinc_msg) on public.acessos to authenticated;
+
+-- Senha decifrada: só o robô (service_role) consegue chamar.
+create or replace function public.senha_acesso(p_id uuid)
+returns text language sql stable security definer set search_path = public, vault as $$
+  select ds.decrypted_secret from public.acessos a join vault.decrypted_secrets ds on ds.id = a.senha_id where a.id = p_id;
+$$;
+revoke execute on function public.senha_acesso(uuid) from public, anon, authenticated;
+grant execute on function public.senha_acesso(uuid) to service_role;
+
+drop function if exists public.acessos_status();
+create function public.acessos_status()
+returns table (id uuid, empresa_id uuid, portal text, usuario text, observacao text, atualizado_em timestamptz, atualizado_por text, tem_senha boolean, sinc_em timestamptz, sinc_ok boolean, sinc_msg text)
+language sql stable security definer set search_path = public as $$
+  select a.id, a.empresa_id, a.portal, a.usuario, a.observacao, a.atualizado_em, a.atualizado_por, a.senha_id is not null, a.sinc_em, a.sinc_ok, a.sinc_msg
+  from acessos a where public.pode_editar() order by a.portal;
+$$;
+revoke execute on function public.acessos_status() from public, anon;
+grant execute on function public.acessos_status() to authenticated;
+
+-- Agendamentos (horário UTC): acompanhar a cada 2 min; radar de hora em hora; puxar processos 6h40 e 19h40 (Brasília).
+-- select cron.schedule('licita-acompanhar', '*/2 * * * *', ...);
+-- select cron.schedule('licita-radar', '7 * * * *', ...);
+-- select cron.schedule('licita-sincronizar', '40 9,22 * * *', ...);

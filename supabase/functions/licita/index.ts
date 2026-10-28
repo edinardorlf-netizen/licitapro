@@ -14,6 +14,7 @@
 // O Licitar Digital bloqueia acesso automático, então ele é acompanhado pelo PNCP.
 // =====================================================================
 import { createClient } from "npm:@supabase/supabase-js@2.49.4";
+import { Sessao, PCP_OP, lerSeusProcessos, urlSeusProcessos, caminhoPublico, type ProcPortal } from "./pcp.ts";
 
 const SB_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -361,8 +362,8 @@ async function verificarProcesso(p: any, opts: { inicial?: boolean } = {}) {
       if (proc.dataHoraAbertura) upd.data_sessao = proc.dataHoraAbertura;
       upd.prazo_impugnacao = proc.dataHoraLimiteImpugnacoes || null;
       upd.prazo_esclarecimento = proc.dataHoraLimiteEsclarecimentos || proc.dataHoraLimiteEsclarecimento || null;
-      if (!p.orgao) upd.orgao = proc.razaoSocialComprador;
-      if (!p.numero) upd.numero = proc.numeroProcesso;
+      if ((!p.orgao || inicial) && proc.razaoSocialComprador) upd.orgao = proc.razaoSocialComprador;
+      if ((!p.numero || inicial) && proc.numeroProcesso) upd.numero = proc.numeroProcesso;
       if (!p.objeto) upd.objeto = proc.resumo;
       if (!p.municipio && proc.cidadeEstadoComprador) upd.municipio = String(proc.cidadeEstadoComprador).split("/")[0];
       if (!p.pcp_codigo && proc.codigoLicitacao) upd.pcp_codigo = proc.codigoLicitacao;
@@ -489,7 +490,8 @@ async function acompanhar(deadline: number) {
   for (const p of fila || []) {
     if (Date.now() > deadline) break;
     try {
-      await verificarProcesso(p);
+      // Processo puxado do portal e ainda não verificado: a primeira leitura vira histórico (sem alarme).
+      await verificarProcesso(p, { inicial: !p.ultima_verificacao });
       ok++;
     } catch (e) {
       erros++;
@@ -499,6 +501,100 @@ async function acompanhar(deadline: number) {
     }
   }
   return { verificados: ok, erros, fila: (fila || []).length };
+}
+
+// ---------- SINCRONIZAR: puxa "Seus Processos" do portal com o login da empresa ----------
+const SIT_ENCERRADA = /cancelad|finalizad|revogad|anulad|desert|fracassad|suspens.*definitiv/i;
+const JANELA_DIAS = 60;
+
+async function sincronizarAcesso(a: any, deadline: number, quem: string) {
+  const resumo = { portal: a.portal, empresa_id: a.empresa_id, lidos: 0, novos: [] as any[], ja: 0, ignorados: 0, aviso: "" };
+  if (a.portal !== "pcp") throw new Error("Por enquanto o robô só entra sozinho no Portal de Compras Públicas.");
+  const { data: senha, error: eS } = await db.rpc("senha_acesso", { p_id: a.id });
+  if (eS || !senha) throw new Error("A senha desse acesso não está guardada. Cadastre de novo em Ajustes → Empresas.");
+
+  const s = new Sessao();
+  try {
+    await s.entrar(a.usuario, String(senha));
+    const corte = Date.now() - JANELA_DIAS * 864e5;
+    const lista: ProcPortal[] = [];
+    for (let pg = 1; pg <= 5; pg++) {
+      const { html, url } = await s.texto(urlSeusProcessos(pg));
+      if (!url.startsWith(PCP_OP)) throw new Error("O portal saiu da área do fornecedor ao abrir 'Seus Processos'.");
+      const linhas = lerSeusProcessos(html);
+      if (pg === 1 && !linhas.length && !/Seus Processos/i.test(html)) throw new Error("Não consegui ler 'Seus Processos' depois do login.");
+      lista.push(...linhas);
+      const ultima = linhas[linhas.length - 1];
+      if (linhas.length < 10 || !ultima || !ultima.abertura || Date.parse(ultima.abertura) < corte) break;
+    }
+    resumo.lidos = lista.length;
+
+    const candidatos = lista.filter((x) => !SIT_ENCERRADA.test(x.situacao) && (!x.abertura || Date.parse(x.abertura) >= corte));
+    resumo.ignorados = lista.length - candidatos.length;
+    const codigos = candidatos.map((x) => x.codigo);
+    const { data: existentes } = codigos.length ? await db.from("processos").select("pcp_codigo").in("pcp_codigo", codigos) : { data: [] };
+    const jaTem = new Set((existentes || []).map((r: any) => Number(r.pcp_codigo)));
+
+    for (const x of candidatos) {
+      if (jaTem.has(x.codigo)) { resumo.ja++; continue; }
+      if (Date.now() > deadline - 8000 || resumo.novos.length >= 25) { resumo.aviso = "Ficaram processos para a próxima rodada."; break; }
+      const dados = await s.texto(`${PCP_OP}/4/Pregoes/DadosPregao/?slA=Edit&ttCD_CHAVE=${x.codigo}`);
+      const caminho = caminhoPublico(dados.html);
+      const link = caminho ? `https://www.portaldecompraspublicas.com.br/processos/${caminho}` : null;
+      let edital: any = null;
+      if (caminho) {
+        const { data } = await db.from("editais").select("*").ilike("link_origem", `%${caminho}%`).limit(1);
+        edital = data && data[0];
+      }
+      const novo = {
+        edital_id: edital?.id || null,
+        controle_pncp: edital?.controle_pncp || null,
+        cnpj: edital?.cnpj || null, ano: edital?.ano || null, seq: edital?.seq || null,
+        pcp_path: caminho, pcp_codigo: x.codigo, portal: "pcp", link_origem: link,
+        orgao: edital?.orgao || x.orgao || null, municipio: edital?.municipio || null,
+        numero: (x.numero || "").split(" ")[0] || null, objeto: x.objeto || edital?.objeto || null,
+        modalidade: edital?.modalidade || null, valor_estimado: edital?.valor_estimado ?? null,
+        data_sessao: x.abertura, empresa_id: a.empresa_id, etapa: "proposta",
+        created_by: `robô · Seus Processos (${quem})`, proxima_verificacao: new Date().toISOString(),
+      };
+      const { data: criado, error } = await db.from("processos").insert(novo).select("id,orgao,numero,data_sessao").single();
+      if (error) {
+        if (/duplicate|unique/i.test(error.message)) { resumo.ja++; continue; }
+        throw new Error(`Erro ao cadastrar ${x.numero}: ${error.message}`);
+      }
+      if (edital) await db.from("editais").update({ status: "acompanhando" }).eq("id", edital.id);
+      await db.from("movimentacoes").insert({ processo_id: criado.id, fonte: "sistema", tipo: "cadastro", titulo: "Processo puxado automaticamente de “Seus Processos” no portal", detalhe: `Login ${a.usuario}`, autor: "robô", ocorrido_em: new Date().toISOString(), chave: "cadastro" });
+      resumo.novos.push(criado);
+    }
+  } finally {
+    await s.sair();
+  }
+  return resumo;
+}
+
+async function registrarSinc(id: string, ok: boolean, msg: string) {
+  await db.from("acessos").update({ sinc_em: new Date().toISOString(), sinc_ok: ok, sinc_msg: msg.slice(0, 300) }).eq("id", id);
+}
+
+async function sincronizar(filtro: { empresa_id?: string; portal?: string }, deadline: number, quem: string) {
+  let q = db.from("acessos").select("id,empresa_id,portal,usuario,senha_id").not("senha_id", "is", null).eq("portal", filtro.portal || "pcp");
+  if (filtro.empresa_id) q = q.eq("empresa_id", filtro.empresa_id);
+  const { data: acessos } = await q;
+  if (!acessos || !acessos.length) throw new Error("Não há login guardado para esse portal. Cadastre em Ajustes → Empresas e acessos.");
+  const resultados: any[] = [];
+  for (const a of acessos) {
+    if (Date.now() > deadline - 15000) break;
+    try {
+      const r = await sincronizarAcesso(a, deadline, quem);
+      await registrarSinc(a.id, true, `${r.novos.length} novo(s), ${r.ja} já acompanhado(s), ${r.ignorados} encerrado(s) ou antigo(s)`);
+      resultados.push(r);
+    } catch (e) {
+      const msg = String((e as Error).message || e);
+      await registrarSinc(a.id, false, msg);
+      resultados.push({ portal: a.portal, empresa_id: a.empresa_id, erro: msg });
+    }
+  }
+  return { resultados };
 }
 
 // ---------- CADASTRAR ----------
@@ -601,6 +697,7 @@ Deno.serve(async (req) => {
       if (!seg || chave !== seg.valor) return json({ erro: "não autorizado" }, 401);
       if (tarefa === "radar") return json(await radar(deadline));
       if (tarefa === "acompanhar") return json(await acompanhar(deadline));
+      if (tarefa === "sincronizar") return json(await sincronizar({}, deadline, "automático"));
       if (tarefa === "cadastrar") {
         const body = await req.json().catch(() => ({}));
         return json(await cadastrar(String(body.entrada || ""), null));
@@ -620,6 +717,12 @@ Deno.serve(async (req) => {
       if (membro.papel === "acompanha") return json({ erro: "Seu perfil só acompanha disputas. Peça a alguém da equipe para cadastrar." }, 403);
       const emp = typeof body.empresa_id === "string" && /^[0-9a-f-]{36}$/i.test(body.empresa_id) ? body.empresa_id : null;
       return json(await cadastrar(String(body.entrada || ""), email, emp));
+    }
+    if (body.acao === "sincronizar") {
+      if (membro.papel === "acompanha") return json({ erro: "Seu perfil só acompanha disputas." }, 403);
+      const emp = typeof body.empresa_id === "string" && /^[0-9a-f-]{36}$/i.test(body.empresa_id) ? body.empresa_id : undefined;
+      const portalSinc = typeof body.portal === "string" ? body.portal : "pcp";
+      return json(await sincronizar({ empresa_id: emp, portal: portalSinc }, deadline, email.split("@")[0]));
     }
     if (body.acao === "verificar") {
       const { data: p } = await db.from("processos").select("*").eq("id", body.id).single();

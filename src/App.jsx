@@ -86,6 +86,10 @@ textarea.input{height:auto;min-height:80px;padding:10px 11px;resize:vertical}
 .emp{border:1px solid var(--line);border-radius:12px;padding:12px 14px;display:flex;flex-direction:column;gap:10px}
 .emp-h{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap}
 .emp-body{display:flex;flex-direction:column;gap:10px;border-top:1px solid var(--line);padding-top:10px}
+.portais{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:8px}
+.portal-op{border:1px solid var(--line);background:var(--surface);border-radius:12px;padding:12px;text-align:left;display:flex;flex-direction:column;gap:4px;cursor:pointer;color:var(--ink)}
+.portal-op:hover{border-color:var(--accent)}
+.portal-op small{color:var(--muted);font-size:12px}
 .acc-form{display:flex;flex-direction:column;gap:10px;background:var(--bg, #f6f7f9);border-radius:10px;padding:12px}
 .form{display:flex;flex-direction:column;gap:12px}
 .err{color:var(--red);font-size:13px;font-weight:500;margin:0}
@@ -729,7 +733,7 @@ function Processos({ ctx }) {
     <div className="stack">
       <div className="top">
         <div><h1>Processos</h1><p>Licitações que a equipe está acompanhando</p></div>
-        {pode && <button className="btn" onClick={() => setNovo(true)}><Icon name="plus" size={17} />Cadastrar processo</button>}
+        {pode && <button className="btn" onClick={() => setNovo(true)}><Icon name="plus" size={17} />Acompanhar processos</button>}
       </div>
       <div className="row-inline" style={{ justifyContent: "space-between" }}>
         <div className="seg">
@@ -745,7 +749,7 @@ function Processos({ ctx }) {
         </div>
       )}
       {procs === null ? <div className="card empty">Carregando…</div> : !ordenada.length ? (
-        <div className="card empty"><b>Nenhum processo aqui</b>{pode ? "Use “Acompanhar” no Radar ou cadastre pelo link do processo." : "Quando a equipe cadastrar processos, eles aparecem aqui."}</div>
+        <div className="card empty"><b>Nenhum processo aqui</b>{pode ? "Clique em “Acompanhar processos” para puxar os processos do portal, ou use “Acompanhar” no Radar." : "Quando a equipe cadastrar processos, eles aparecem aqui."}</div>
       ) : (
         <div className="pgrid">
           {ordenada.map((p) => {
@@ -776,16 +780,47 @@ function Processos({ ctx }) {
   );
 }
 
+/* Portais do cadastro. "auto" = o robô entra com o login da empresa e puxa "Seus Processos". */
+const PORTAIS_CADASTRO = [
+  { k: "pcp", auto: true },
+  { k: "licitar", nota: "O Licitar Digital bloqueia acesso automático (proteção contra robôs), então o robô não consegue entrar com o login. Cole o link do processo: ele é acompanhado pelo PNCP." },
+  { k: "comprasgov", nota: "Para o Compras.gov.br, cole o link do processo no PNCP ou o número de controle. A entrada automática com login ainda não está disponível." },
+  { k: "bll", nota: "Para a BLL, cole o link do processo no PNCP ou o número de controle. A entrada automática com login ainda não está disponível." },
+  { k: "licitacoes-e", nota: "Para o Licitações-e, cole o link do processo no PNCP ou o número de controle. A entrada automática com login ainda não está disponível." },
+  { k: "outro", nota: "Cole o link do processo no PNCP (pncp.gov.br/app/editais/…) ou o número de controle do PNCP." },
+];
+
 function NovoProcesso({ ctx, onClose }) {
   const ativas = ctx.empresas.filter((x) => x.ativa);
-  const [v, setV] = useState("");
   const [empId, setEmpId] = useState(ativas.length === 1 ? ativas[0].id : "");
+  const [passo, setPasso] = useState("portal"); // portal → auto | link
+  const [portalSel, setPortalSel] = useState(null);
+  const [acessos, setAcessos] = useState(null);
+  const [v, setV] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
-  const go = async (e) => {
+  const [res, setRes] = useState(null);
+
+  useEffect(() => { sb.rpc("acessos_status").then(({ data }) => setAcessos(data || [])); }, []);
+  const acessoDe = (portalK) => (acessos || []).find((a) => a.portal === portalK && a.tem_senha && (!empId || a.empresa_id === empId));
+
+  const puxar = async () => {
+    setBusy(true); setErr(""); setRes(null);
+    try {
+      const r = await chamarRobo({ acao: "sincronizar", portal: "pcp", empresa_id: empId || null });
+      setRes(r.resultados || []);
+      ctx.carregar();
+    } catch (e2) { setErr(errMsg(e2)); }
+    setBusy(false);
+  };
+  const escolher = (p) => {
+    if (ativas.length > 1 && !empId) return setErr("Escolha primeiro a empresa.");
+    setErr(""); setPortalSel(p);
+    if (p.auto && acessoDe(p.k)) { setPasso("auto"); puxar(); } else setPasso("link");
+  };
+  const cadastrarLink = async (e) => {
     e.preventDefault();
     if (!v.trim()) return setErr("Cole o link ou o número do processo.");
-    if (ativas.length > 1 && !empId) return setErr("Escolha a empresa que vai participar.");
     setBusy(true); setErr("");
     try {
       const r = await chamarRobo({ acao: "cadastrar", entrada: v.trim(), empresa_id: empId || null });
@@ -794,33 +829,99 @@ function NovoProcesso({ ctx, onClose }) {
     } catch (e2) { setErr(errMsg(e2)); }
     setBusy(false);
   };
+  const empNome = (id) => nomeCurto(ctx.empresas.find((x) => x.id === id));
+  const ac = portalSel ? acessoDe(portalSel.k) : null;
+
   return (
-    <div className="sheet-bg" onClick={onClose}>
-      <form className="sheet" onClick={(e) => e.stopPropagation()} onSubmit={go} noValidate role="dialog" aria-modal="true" aria-label="Cadastrar processo">
-        <div className="sheet-h"><h2>Cadastrar processo</h2><button type="button" className="iconbtn" onClick={onClose} aria-label="Fechar"><Icon name="x" size={18} /></button></div>
-        <div className="field">
-          <label htmlFor="np-link">Link ou número do processo</label>
-          <textarea id="np-link" className="input" rows={3} value={v} onChange={(e) => setV(e.target.value)} placeholder="https://www.portaldecompraspublicas.com.br/processos/MG/…" />
+    <div className="sheet-bg" onClick={busy ? undefined : onClose}>
+      <div className="sheet" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="Acompanhar processos">
+        <div className="sheet-h">
+          <h2>{passo === "portal" ? "Acompanhar processos" : portal(portalSel.k).nome}</h2>
+          <button type="button" className="iconbtn" onClick={onClose} disabled={busy} aria-label="Fechar"><Icon name="x" size={18} /></button>
         </div>
-        {ativas.length > 1 && (
-          <div className="field"><label htmlFor="np-emp">Empresa que vai participar</label>
-            <select id="np-emp" className="input" value={empId} onChange={(e) => setEmpId(e.target.value)}>
-              <option value="">Escolha…</option>
-              {ativas.map((x) => <option key={x.id} value={x.id}>{x.nome} · {fmtCnpj(x.cnpj)}</option>)}
-            </select></div>
+
+        {passo === "portal" && (
+          <>
+            {ativas.length > 1 && (
+              <div className="field"><label htmlFor="np-emp">Empresa</label>
+                <select id="np-emp" className="input" value={empId} onChange={(e) => setEmpId(e.target.value)}>
+                  <option value="">Escolha…</option>
+                  {ativas.map((x) => <option key={x.id} value={x.id}>{x.nome} · {fmtCnpj(x.cnpj)}</option>)}
+                </select></div>
+            )}
+            <p className="hint" style={{ margin: 0 }}>Em qual portal está o processo?</p>
+            <div className="portais">
+              {PORTAIS_CADASTRO.map((p) => {
+                const auto = p.auto && acessoDe(p.k);
+                return (
+                  <button key={p.k} type="button" className="portal-op" onClick={() => escolher(p)} disabled={acessos === null && p.auto}>
+                    <span className="row-inline" style={{ gap: 6 }}><i className="pdot" style={{ background: portal(p.k).cor }} /><b>{portal(p.k).nome}</b></span>
+                    <small>{auto ? "⚡ Puxa sozinho os processos do seu login" : p.auto ? "Cadastre o login em Ajustes para puxar sozinho" : "Pelo link do processo"}</small>
+                  </button>
+                );
+              })}
+            </div>
+          </>
         )}
-        <div className="hint">
-          Aceita:
-          <ul className="steps" style={{ marginTop: 6, fontSize: 12.5 }}>
-            <li>link do processo no <b>Portal de Compras Públicas</b>;</li>
-            <li>link do processo no <b>PNCP</b> (pncp.gov.br/app/editais/…);</li>
-            <li>número de controle do PNCP (ex.: <code>18192898000102-1-000167/2026</code>);</li>
-            <li>link do <b>Licitar Digital</b>, se o processo já apareceu no radar.</li>
-          </ul>
-        </div>
-        {err && <p className="err">{err}</p>}
-        <button className="btn block" disabled={busy}>{busy ? <><span className="spin" />Buscando o processo…</> : "Cadastrar e acompanhar"}</button>
-      </form>
+
+        {passo === "auto" && (
+          <div className="stack" style={{ gap: 12 }}>
+            {busy && (
+              <div className="banner info"><span className="spin" /><span>Entrando no portal com o login <b>{ac ? ac.usuario : ""}</b>{empId ? ` (${empNome(empId)})` : ""} e lendo “Seus Processos”… leva uns 30 segundos.</span></div>
+            )}
+            {res && res.map((r, i) => (
+              <div key={i} className="stack" style={{ gap: 8 }}>
+                {r.erro ? <div className="banner warn"><span>⚠ {r.erro}</span></div> : (
+                  <>
+                    <div className="banner info"><span>
+                      {r.novos.length ? <><b>{r.novos.length} processo(s) novo(s)</b> cadastrado(s) e já em acompanhamento.</> : <b>Nenhum processo novo.</b>}
+                      {" "}{r.ja} já estava(m) no LicitaPro · {r.ignorados} encerrado(s) ou com sessão há mais de 60 dias, ignorado(s).
+                      {r.aviso ? ` ${r.aviso}` : ""}
+                    </span></div>
+                    {r.novos.length > 0 && (
+                      <div className="list">
+                        {r.novos.map((n) => (
+                          <div key={n.id} className="lrow click" role="button" tabIndex={0} onClick={() => { onClose(); ctx.abrir(n.id); }} onKeyDown={(e) => e.key === "Enter" && (onClose(), ctx.abrir(n.id))}>
+                            <div className="lmain"><span className="lt">{n.orgao || "Processo"}</span><span className="ls">{n.numero ? `Nº ${n.numero} · ` : ""}Sessão {fmtDH(n.data_sessao)}</span></div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            ))}
+            {err && <p className="err">{err}</p>}
+            {!busy && (
+              <div className="row-inline">
+                <button type="button" className="btn" onClick={onClose}>Pronto</button>
+                <button type="button" className="btn ghost" onClick={puxar}><Icon name="refresh" size={15} />Puxar de novo</button>
+                <button type="button" className="linkbtn" onClick={() => { setErr(""); setPasso("link"); }}>Cadastrar um processo pelo link</button>
+              </div>
+            )}
+            <p className="hint" style={{ margin: 0 }}>O robô também puxa sozinho, todo dia às 6h40 e às 19h40. Ele só lê: não envia proposta, lance nem mensagem.</p>
+          </div>
+        )}
+
+        {passo === "link" && (
+          <form className="stack" style={{ gap: 12 }} onSubmit={cadastrarLink} noValidate>
+            {portalSel.auto && !ac && (
+              <div className="banner warn"><span>Para puxar sozinho os processos do Portal de Compras Públicas, cadastre o login da empresa em <b>Ajustes → Empresas e acessos</b>. Por enquanto, dá para cadastrar pelo link.</span></div>
+            )}
+            {portalSel.nota && <p className="hint" style={{ margin: 0 }}>{portalSel.nota}</p>}
+            <div className="field">
+              <label htmlFor="np-link">Link ou número do processo</label>
+              <textarea id="np-link" className="input" rows={3} value={v} onChange={(e) => setV(e.target.value)} placeholder={portalSel.k === "pcp" ? "https://www.portaldecompraspublicas.com.br/processos/MG/…" : "https://pncp.gov.br/app/editais/…"} />
+            </div>
+            {err && <p className="err">{err}</p>}
+            <div className="row-inline">
+              <button className="btn" disabled={busy}>{busy ? <><span className="spin" />Buscando o processo…</> : "Cadastrar e acompanhar"}</button>
+              <button type="button" className="btn ghost" disabled={busy} onClick={() => { setErr(""); setPasso("portal"); }}>Voltar</button>
+            </div>
+          </form>
+        )}
+        {passo === "portal" && err && <p className="err">{err}</p>}
+      </div>
     </div>
   );
 }
@@ -1291,6 +1392,11 @@ function Acessos({ empresa, acessos, admin, notify, recarregar }) {
                 <span className="lt"><PortalTag k={a.portal} /> {portal(a.portal).nome}</span>
                 <span className="ls">Usuário: <b>{a.usuario}</b> · {a.tem_senha ? "🔒 senha guardada" : "⚠ sem senha"}{a.observacao ? ` · ${a.observacao}` : ""}</span>
                 <span className="ls">Atualizado {fmtDH(a.atualizado_em)}{a.atualizado_por ? ` por ${a.atualizado_por.split("@")[0]}` : ""}</span>
+                {a.portal === "pcp" && (
+                  <span className="ls" style={{ color: a.sinc_em ? (a.sinc_ok ? "var(--accent-ink)" : "var(--red, #B91C1C)") : "var(--muted)" }}>
+                    {a.sinc_em ? `${a.sinc_ok ? "✓" : "⚠"} Última leitura de “Seus Processos” ${fmtDH(a.sinc_em)}: ${a.sinc_msg || ""}` : "Ainda não puxou processos com esse login"}
+                  </span>
+                )}
               </div>
               {admin && (
                 <div className="row-inline" style={{ flexWrap: "nowrap" }}>
