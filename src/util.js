@@ -28,6 +28,7 @@ export const ETAPAS = [
   { id: "ganhamos", nome: "Ganhamos", cor: "#15803D" },
   { id: "perdemos", nome: "Perdemos", cor: "#B91C1C" },
   { id: "desistimos", nome: "Desistimos", cor: "#94A3B8" },
+  { id: "encerrado", nome: "Cancelado / encerrado", cor: "#78716C" },
 ];
 export const etapa = (id) => ETAPAS.find((e) => e.id === id) || ETAPAS[0];
 export const ATIVAS = ["analise", "participar", "proposta", "disputa", "habilitacao"];

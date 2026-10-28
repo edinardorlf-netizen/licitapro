@@ -721,7 +721,7 @@ function Processos({ ctx }) {
   const nomeDe = (e) => (equipe.find((p) => p.email === e) || {}).nome || (e ? e.split("@")[0] : "—");
   const lista = (procs || []).filter((p) =>
     (emp === "todas" || (emp === "sem" ? !p.empresa_id : p.empresa_id === emp)) &&
-    (filtro === "todos" || (filtro === "ativos" ? ATIVAS.includes(p.etapa) : filtro === "ganhos" ? p.etapa === "ganhamos" : ["perdemos", "desistimos"].includes(p.etapa))) &&
+    (filtro === "todos" || (filtro === "ativos" ? ATIVAS.includes(p.etapa) : filtro === "ganhos" ? p.etapa === "ganhamos" : ["perdemos", "desistimos", "encerrado"].includes(p.etapa))) &&
     (!q || `${p.orgao} ${p.municipio} ${p.numero} ${p.objeto}`.toLowerCase().includes(q.toLowerCase())));
   const ordenada = [...lista].sort((a, b) => {
     const na = naoVistas[a.id] ? 1 : 0, nb = naoVistas[b.id] ? 1 : 0;
@@ -737,7 +737,7 @@ function Processos({ ctx }) {
       </div>
       <div className="row-inline" style={{ justifyContent: "space-between" }}>
         <div className="seg">
-          {[["ativos", "Ativos"], ["ganhos", "Ganhos"], ["perdidos", "Perdidos"], ["todos", "Todos"]].map(([k, l]) => <button key={k} className={filtro === k ? "on" : ""} onClick={() => setFiltro(k)}>{l}</button>)}
+          {[["ativos", "Ativos"], ["ganhos", "Ganhos"], ["perdidos", "Perdidos / encerrados"], ["todos", "Todos"]].map(([k, l]) => <button key={k} className={filtro === k ? "on" : ""} onClick={() => setFiltro(k)}>{l}</button>)}
         </div>
         <input id="proc-busca" className="input" style={{ maxWidth: 300 }} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar órgão, número ou objeto" aria-label="Buscar processos" />
       </div>
@@ -1022,9 +1022,14 @@ function Processo({ id, ctx, onBack }) {
         </div>
         <div className="fgrid">
           <div className="field"><label htmlFor="pe-etapa">Etapa</label>
-            <select id="pe-etapa" className="input" value={p.etapa} disabled={!pode} onChange={(e) => salvar({ etapa: e.target.value }, `Etapa: ${etapa(e.target.value).nome}`)}>
+            <select id="pe-etapa" className="input" value={p.etapa} disabled={!pode} onChange={(e) => salvar({ etapa: e.target.value, etapa_auto: false, etapa_motivo: null }, `Etapa: ${etapa(e.target.value).nome}. O robô não muda mais a etapa deste processo.`)}>
               {ETAPAS.map((x) => <option key={x.id} value={x.id}>{x.nome}</option>)}
-            </select></div>
+            </select>
+            <span className="hint" style={{ marginTop: 4 }}>
+              {p.etapa_auto !== false
+                ? <>⚙ Automática{p.etapa_motivo ? `: ${p.etapa_motivo}` : " — muda sozinha conforme o andamento no portal."}</>
+                : <>✋ Definida pela equipe.{pode && <> <button type="button" className="linkbtn" style={{ fontSize: 12 }} onClick={() => salvar({ etapa_auto: true }, "Etapa automática ligada")}>Voltar a ser automática</button></>}</>}
+            </span></div>
           <div className="field"><label htmlFor="pe-resp">Responsável</label>
             <select id="pe-resp" className="input" value={p.responsavel || ""} disabled={!pode} onChange={(e) => salvar({ responsavel: e.target.value || null }, "Responsável atualizado")}>
               <option value="">Ninguém</option>
@@ -1159,6 +1164,13 @@ function Item({ it, pode, notify, onSaved }) {
         {vm != null && <span>Nosso mínimo: <b style={{ color: "var(--accent-ink)" }}>{brl(vm)}</b></span>}
         {it.marca && <span>Marca: <b>{it.marca}</b></span>}
       </div>
+      {(it.vencedor_portal || it.arrematante || it.resultado_fornecedor) && (
+        <div className="item-meta">
+          {it.vencedor_portal ? <span>{it.nosso_vence ? "🏆 " : ""}Vencedor: <b>{it.vencedor_portal}</b></span>
+            : it.resultado_fornecedor ? <span>{it.nosso_vence ? "🏆 " : ""}Vencedor (PNCP): <b>{it.resultado_fornecedor}</b></span>
+            : <span>{it.nosso_arremata ? "🟢 " : ""}Arrematante: <b>{it.arrematante}</b>{it.arrematante_lance != null ? ` · ${brl(it.arrematante_lance)}` : ""}</span>}
+        </div>
+      )}
       {it.participar && vm != null && lance != null && (
         <div className={`alerta-lance ${lance >= vm ? "ok" : "ruim"}`}>{lance >= vm ? `Ainda dá para disputar: o melhor lance está ${brl(lance - vm)} acima do nosso mínimo.` : `O melhor lance está ${brl(vm - lance)} abaixo do nosso mínimo.`}</div>
       )}

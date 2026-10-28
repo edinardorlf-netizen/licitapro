@@ -35,6 +35,7 @@ const json = (body: unknown, status = 200) =>
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 class Limite extends Error {}
+let limiteExec = Infinity; // horário-limite da execução atual (as funções têm ~150 s)
 
 // ---------- Acesso às fontes, com ritmo controlado ----------
 let lastPncp = 0;
@@ -212,11 +213,91 @@ function importanteChat(frase: string, empresa: string[]) {
   return ALERTA_CHAT.some((k) => t.includes(` ${k}`));
 }
 
+// O nome (ou CNPJ) que aparece no portal é de uma das nossas empresas?
+function ehNosso(texto: string, empresa: string[]) {
+  const t = norm(texto);
+  const dig = (texto || "").replace(/\D/g, "");
+  return empresa.some((e) => (/^\d{14}$/.test(e) ? dig.includes(e) : t.includes(` ${e} `)));
+}
+
+// ---------- Etapa automática ----------
+const NOME_ETAPA: Record<string, string> = {
+  analise: "Em análise", participar: "Vamos participar", proposta: "Proposta enviada", disputa: "Em disputa",
+  habilitacao: "Habilitação / recurso", ganhamos: "Ganhamos", perdemos: "Perdemos", desistimos: "Desistimos", encerrado: "Cancelado / encerrado",
+};
+const ORDEM_ETAPA: Record<string, number> = { analise: 0, participar: 1, proposta: 2, disputa: 3, habilitacao: 4, perdemos: 5, encerrado: 5, ganhamos: 6, desistimos: 9 };
+// A etapa só anda para frente (e "Desistimos", marcado pela equipe, nunca é trocado).
+const podeAvancar = (de: string, para: string) => de !== "desistimos" && (ORDEM_ETAPA[para] ?? 0) > (ORDEM_ETAPA[de] ?? 0);
+
+// Situações oficiais do Portal de Compras Públicas (tabela do próprio site do portal).
+// Processo: Aguardando início de recebimento de propostas, Recebendo Propostas, Aguardando Início de Sessão,
+//   Suspenso antes da abertura, Em republicação, Sessão Pública Iniciada, Em Andamento, Suspenso,
+//   Encaminhado p/ Adjudicação-Homologação, Adjudicado, Homologado, Finalizado, Cancelado, Revogado, Anulado, Fracassado, Deserto.
+// Item: Fechado, Aberto, Suspenso, Em processo de desempate, Empate Lei 123, Agendamento da Lei 123, Aguardando Encerramento,
+//   Tempo Aleatório, Iminência de Fechamento, Encerrado, Em Negociação, Recebendo Documentos, Analisando documentação, Aceito,
+//   Fornecedor divulgado, Fornecedor Habilitado, Empate Lei 123 na Habilitação/Adjudicação/Homologação, Adjudicado, Homologado,
+//   Finalizado, Cancelado (na Adjudicação/Homologação), Anulado, Revogado, Deserto, Fracassado, Recebendo Propostas, Em Republicação.
+const IT_SEM = /cancelad|anulad|revogad|desert|fracassad/i;
+const IT_FINAL = /adjudicad|homologad|empate lei 123 na (adjudica|homologa)|finalizad/i;
+const IT_HAB = /^encerrado|negocia|recebendo documentos|analis|an[aá]lise de doc|aceito|habilitad|fornecedor divulgado|empate lei 123 na habilita/i;
+const IT_LANCES = /^aberto$|desempate|^empate lei 123$|agendamento da lei 123|aguardando encerramento|tempo aleat|imin[eê]ncia de fechamento/i;
+const PR_SEM = /cancelad|revogad|anulad|fracassad|desert/i;
+const PR_FINAL = /encaminhado|adjudica|homolog|finalizad/i;
+const PR_SUSP = /suspens|republica/i;
+const PR_SESSAO = /sess[aã]o p[uú]blica iniciada|em andamento/i;
+const PR_ANTES = /aguardando in[ií]cio|recebendo propostas|^aberto|publicad|divulgad/i;
+
+async function calcularEtapa(p: any, empresa: string[]): Promise<{ etapa: string; motivo: string } | null> {
+  const { data: itens } = await db.from("itens").select("numero,situacao,situacao_portal,nosso_arremata,nosso_vence,resultado_fornecedor").eq("processo_id", p.id);
+  const lista: any[] = itens || [];
+  const sitItem = (i: any) => String(i.situacao_portal || i.situacao || "").trim();
+  const sit = String(p.situacao_portal || p.situacao_pncp || "").trim();
+  const nums = (arr: any[]) => arr.map((i) => i.numero).sort((a, b) => a - b);
+  const resumo = (n: number[]) => (n.length > 6 ? `${n.slice(0, 6).join(", ")} e mais ${n.length - 6}` : n.join(", "));
+
+  // 1) Vencemos algum item (declarado vencedor no chat do portal ou resultado no PNCP)
+  const vencidos = nums(lista.filter((i) => i.nosso_vence || (i.resultado_fornecedor && ehNosso(i.resultado_fornecedor, empresa))));
+  if (vencidos.length) return { etapa: "ganhamos", motivo: `A empresa foi declarada vencedora do(s) item(ns) ${resumo(vencidos)}.` };
+
+  // 2) Processo cancelado, revogado, anulado, fracassado ou deserto
+  if (PR_SEM.test(sit)) return { etapa: "encerrado", motivo: `Processo ${sit.toLowerCase()} no portal.` };
+  const ativos = lista.filter((i) => !IT_SEM.test(sitItem(i)));
+  if (lista.length && !ativos.length) return { etapa: "encerrado", motivo: "Todos os itens foram cancelados, desertos ou fracassados." };
+
+  // 3) Suspenso ou em republicação: espera, sem mudar a etapa
+  if (PR_SUSP.test(sit)) return null;
+
+  const emLances = ativos.filter((i) => IT_LANCES.test(sitItem(i)));
+  const emHab = ativos.filter((i) => IT_HAB.test(sitItem(i)));
+  const emFinal = ativos.filter((i) => IT_FINAL.test(sitItem(i)));
+  const arrematando = nums(lista.filter((i) => i.nosso_arremata));
+  const participou = (ORDEM_ETAPA[p.etapa] ?? 0) >= 2;
+
+  // 4) Encaminhado para adjudicação/homologação, adjudicado, homologado ou finalizado
+  if (PR_FINAL.test(sit) || (ativos.length > 0 && emFinal.length === ativos.length)) {
+    // "Perdemos" só com o histórico do chat lido por inteiro (senão poderia faltar um "declarado vencedor").
+    if (participou && (p.chat_historico_ok || !p.pcp_path)) return { etapa: "perdemos", motivo: `Processo ${sit ? sit.toLowerCase() : "concluído"} e a empresa não aparece como vencedora de nenhum item.` };
+    return { etapa: "habilitacao", motivo: `Processo ${sit ? sit.toLowerCase() : "na fase final"}; aguardando o resultado dos itens.` };
+  }
+
+  // 5) Sessão pública em andamento
+  const sess = p.data_sessao ? Date.parse(p.data_sessao) : null;
+  const sessaoPassou = !!sess && Date.now() > sess;
+  if (PR_SESSAO.test(sit) || (sessaoPassou && !PR_ANTES.test(sit))) {
+    if (emLances.length) return { etapa: "disputa", motivo: `${emLances.length} item(ns) em disputa de lances${arrematando.length ? `; a empresa está arrematando o(s) item(ns) ${resumo(arrematando)}` : ""}.` };
+    if (emHab.length || emFinal.length) {
+      return { etapa: "habilitacao", motivo: arrematando.length ? `Lances encerrados; fase de aceitação/habilitação. A empresa arrematou o(s) item(ns) ${resumo(arrematando)}.` : "Lances encerrados; itens em aceitação, negociação ou análise de documentos." };
+    }
+    return { etapa: "disputa", motivo: PR_SESSAO.test(sit) ? "A sessão pública começou no portal." : "Passou a data da sessão." };
+  }
+  return null;
+}
+
 function proxima(p: any): number {
   const agora = Date.now();
   const s = p.data_sessao ? Date.parse(p.data_sessao) : null;
   const sit = `${p.situacao_portal || ""} ${p.situacao_pncp || ""}`.toLowerCase();
-  const final = /finalizad|revogad|anulad|desert|fracassad|cancelad/.test(sit) || ["ganhamos", "perdemos", "desistimos"].includes(p.etapa);
+  const final = /finalizad|revogad|anulad|desert|fracassad|cancelad/.test(sit) || ["desistimos"].includes(p.etapa);
   if (final) return 12 * 60;
   // Dia da disputa no Portal de Compras Públicas: chat e itens a cada 2 min (de 30 min antes até 12 h depois do início).
   if (p.pcp_path && s && s - agora < 30 * 60e3 && agora - s < 12 * 3600e3) return 2;
@@ -333,16 +414,19 @@ async function verificarProcesso(p: any, opts: { inicial?: boolean } = {}) {
         }
 
         // Resultados dos itens que a empresa disputa
-        const alvo = linhas.filter((l) => l.tem_resultado && porNum.get(l.numero)?.participar && !porNum.get(l.numero)?.resultado_fornecedor);
-        for (const l of alvo.slice(0, 15)) {
+        const alvo = linhas.filter((l) => l.tem_resultado && !porNum.get(l.numero)?.resultado_fornecedor)
+          .sort((a, b) => Number(!!porNum.get(b.numero)?.participar) - Number(!!porNum.get(a.numero)?.participar));
+        for (const l of alvo.slice(0, 6)) {
+          if (Date.now() > limiteExec - 20000) break;
           const res: any[] = (await pncpGet(`/api/pncp/v1${base}/itens/${l.numero}/resultados`)) || [];
           const r = res.find((x) => x.situacaoCompraItemResultadoId !== 2) || res[0];
           if (!r) continue;
           const nome = r.nomeRazaoSocialFornecedor || r.niFornecedor || "Fornecedor";
           const valor = r.valorUnitarioHomologado ?? r.valorTotalHomologado;
-          await db.from("itens").update({ resultado_fornecedor: nome, resultado_valor: valor }).eq("processo_id", p.id).eq("numero", l.numero);
-          const nosso = empresa.some((e) => e && (norm(nome).includes(e) || String(r.niFornecedor || "") === e));
-          add({ fonte: "pncp", tipo: "resultado", titulo: nosso ? `🏆 Vocês venceram o item ${l.numero}` : `Item ${l.numero}: vencedor ${nome}`, detalhe: valor != null ? `Valor unitário homologado: ${money(valor)}` : null, ocorrido_em: new Date().toISOString(), importante: true, chave: `pncp-res-${l.numero}` });
+          const nosso = ehNosso(`${nome} ${r.niFornecedor || ""}`, empresa);
+          await db.from("itens").update({ resultado_fornecedor: nome, resultado_valor: valor, ...(nosso ? { nosso_vence: true } : {}) }).eq("processo_id", p.id).eq("numero", l.numero);
+          const marcado = !!porNum.get(l.numero)?.participar;
+          if (nosso || marcado) add({ fonte: "pncp", tipo: "resultado", titulo: nosso ? `🏆 Vocês venceram o item ${l.numero}` : `Item ${l.numero}: vencedor ${nome}`, detalhe: valor != null ? `Valor unitário homologado: ${money(valor)}` : null, ocorrido_em: new Date().toISOString(), importante: true, chave: `pncp-res-${l.numero}` });
         }
         upd.pncp_atualizacao = det.dataAtualizacaoGlobal;
       }
@@ -369,19 +453,81 @@ async function verificarProcesso(p: any, opts: { inicial?: boolean } = {}) {
       if (!p.pcp_codigo && proc.codigoLicitacao) upd.pcp_codigo = proc.codigoLicitacao;
     }
     if (codigo) {
-      // Chat público da sessão
-      const chat = await pcpGet(`/v1/licitacao/${codigo}/chat`);
-      const frases: any[] = (chat && chat.frasesChat) || [];
-      let ult = p.pcp_chat_ult || "";
-      for (const f of frases) {
-        const quando = f.dataHoraFrase || "";
-        if (!inicial && ult && quando <= ult) continue;
-        const autor = f.apelido || "Portal";
-        const imp = !inicial && importanteChat(f.frase || "", empresa);
-        add({ fonte: "portal", tipo: "chat", titulo: autor === "Sistema" ? "Mensagem do sistema" : `Mensagem de ${autor}`, detalhe: f.frase, autor, ocorrido_em: quando || new Date().toISOString(), importante: imp, chave: `pcp-c-${quando}-${hash(f.frase || "")}` });
+      // ---- Chat da sessão ----
+      // O portal entrega 50 mensagens por página, das mais novas para as mais antigas.
+      // Na primeira vez lê o histórico inteiro (para saber arrematantes e vencedores de cada item).
+      const ult = p.pcp_chat_ult || "";
+      const lerHistorico = !p.chat_historico_ok;
+      const frases: any[] = [];
+      let chegouAoFim = false;
+      for (let pg = 1; pg <= (lerHistorico ? 60 : 12); pg++) {
+        if (pg > 1 && Date.now() > limiteExec - 25000) break;
+        const chat = await pcpGet(`/v1/licitacao/${codigo}/chat${pg > 1 ? `?pagina=${pg}` : ""}`);
+        const lote: any[] = (chat && chat.frasesChat) || [];
+        frases.push(...lote);
+        if (lote.length < 50) { chegouAoFim = true; break; }
+        const maisAntiga = lote[lote.length - 1]?.dataHoraFrase || "";
+        if (!lerHistorico && ult && maisAntiga < ult) break;
       }
-      for (const f of frases) if ((f.dataHoraFrase || "") > ult) ult = f.dataHoraFrase;
-      if (ult) upd.pcp_chat_ult = ult;
+      if (lerHistorico && chegouAoFim) upd.chat_historico_ok = true;
+
+      // Estado atual dos itens (arrematante, vencedor) para comparar com o que o chat anuncia
+      const { data: itAtuais } = await db.from("itens").select("numero,arrematante,arrematante_em,nosso_arremata,vencedor_portal,nosso_vence,participar").eq("processo_id", p.id);
+      const estado = new Map<number, any>((itAtuais || []).map((i: any) => [Number(i.numero), { ...i }]));
+      const mudou = new Set<number>();
+      const pegar = (n: number) => { if (!estado.has(n)) estado.set(n, { numero: n }); return estado.get(n); };
+
+      let novoUlt = ult;
+      for (const f of [...frases].reverse()) { // do mais antigo para o mais novo
+        const quando: string = f.dataHoraFrase || "";
+        const texto: string = f.frase || "";
+        const autor = f.apelido || "Portal";
+        const antiga = inicial || (!!ult && quando < ult);
+        if (quando > novoUlt) novoUlt = quando;
+        const imp = !antiga && importanteChat(texto, empresa);
+        add({ fonte: "portal", tipo: "chat", titulo: autor === "Sistema" ? "Mensagem do sistema" : `Mensagem de ${autor}`, detalhe: texto, autor, ocorrido_em: quando || new Date().toISOString(), importante: imp, historico: antiga, chave: `pcp-c-${quando}-${hash(texto)}` });
+
+        // "O item 0005 tem como novo arrematante EMPRESA com lance de R$ 6,00."
+        const mA = texto.match(/item\s+0*(\d+)\s+tem como novo arrematante\s+(.+?)\s+com lance de\s+R\$\s*([\d.,]+)/i);
+        if (mA) {
+          const n = Number(mA[1]); const it = pegar(n);
+          if (!it.arrematante_em || quando >= String(it.arrematante_em)) {
+            const nosso = ehNosso(mA[2], empresa);
+            const valor = Number(mA[3].replace(/\./g, "").replace(",", "."));
+            if (!antiga && nosso && !it.nosso_arremata) add({ fonte: "portal", tipo: "item", titulo: `🟢 Item ${n}: vocês estão arrematando`, detalhe: `Lance de ${money(valor)}`, ocorrido_em: quando, importante: true, chave: `arr-${n}-${quando}` });
+            if (!antiga && !nosso && it.nosso_arremata) add({ fonte: "portal", tipo: "item", titulo: `🔴 Item ${n}: outra empresa passou à frente`, detalhe: `${mA[2]} com ${money(valor)}`, ocorrido_em: quando, importante: true, chave: `perdeu-${n}-${quando}` });
+            Object.assign(it, { arrematante: mA[2].trim(), arrematante_lance: valor, arrematante_em: quando, nosso_arremata: nosso });
+            mudou.add(n);
+          }
+          continue;
+        }
+        // "Para o item 0153 foi habilitado e declarado vencedor o fornecedor EMPRESA."
+        const mV = texto.match(/item\s+0*(\d+)\s+foi habilitado e declarado vencedor o fornecedor\s+(.+?)\.?\s*$/i);
+        if (mV) {
+          const n = Number(mV[1]); const it = pegar(n);
+          const nosso = ehNosso(mV[2], empresa);
+          if (!antiga && nosso && !it.nosso_vence) add({ fonte: "portal", tipo: "resultado", titulo: `🏆 Item ${n}: vocês foram declarados vencedores`, detalhe: mV[2], ocorrido_em: quando, importante: true, chave: `venc-${n}` });
+          Object.assign(it, { vencedor_portal: mV[2].trim(), nosso_vence: nosso || !!it.nosso_vence });
+          mudou.add(n);
+          continue;
+        }
+        // Inabilitação / desclassificação citando a empresa
+        if (!antiga && /inabilitad|desclassificad|recusad/i.test(texto) && ehNosso(texto, empresa)) {
+          const n = Number((texto.match(/item\s+0*(\d+)/i) || [])[1] || 0);
+          add({ fonte: "portal", tipo: "item", titulo: `⚠ ${n ? `Item ${n}: ` : ""}a empresa foi citada em inabilitação/desclassificação`, detalhe: texto, ocorrido_em: quando, importante: true, chave: `inab-${hash(texto)}-${quando}` });
+        }
+      }
+      if (novoUlt) upd.pcp_chat_ult = novoUlt;
+      if (mudou.size) {
+        const linhasIt = [...mudou].map((n) => {
+          const it = estado.get(n);
+          return { processo_id: p.id, numero: n, arrematante: it.arrematante ?? null, arrematante_lance: it.arrematante_lance ?? null, arrematante_em: it.arrematante_em ?? null, nosso_arremata: !!it.nosso_arremata, vencedor_portal: it.vencedor_portal ?? null, nosso_vence: !!it.nosso_vence };
+        });
+        for (let i = 0; i < linhasIt.length; i += 300) {
+          const { error } = await db.from("itens").upsert(linhasIt.slice(i, i + 300), { onConflict: "processo_id,numero" });
+          if (error) throw new Error(`Erro ao salvar itens do chat: ${error.message}`);
+        }
+      }
 
       // Documentos publicados no portal
       const docs: any[] = (await pcpGet(`/v2/licitacao/${codigo}/documentos/processo`)) || [];
@@ -390,35 +536,40 @@ async function verificarProcesso(p: any, opts: { inicial?: boolean } = {}) {
         add({ fonte: "portal", tipo: "documento", titulo: `Documento no portal: ${d.nome || d.tituloDocumento || "arquivo"}`, detalhe: d.tipo || null, link: d.url || null, ocorrido_em: new Date().toISOString(), importante: !inicial, chave: `pcp-d-${d.idArquivo}` });
       }
 
-      // Melhor lance e situação dos itens (perto da sessão, ou no cadastro)
+      // ---- Itens: situação e melhor lance ----
+      // No cadastro; perto da sessão a cada ~8 min; depois da sessão, de hora em hora.
       const s = upd.data_sessao ? Date.parse(String(upd.data_sessao)) : p.data_sessao ? Date.parse(p.data_sessao) : null;
-      const pertoDaSessao = s && Math.abs(Date.now() - s) < 3 * 24 * 3600e3;
-      if (inicial || pertoDaSessao) {
-        const { data: meus } = await db.from("itens").select("numero,participar,situacao_portal,melhor_lance").eq("processo_id", p.id);
-        const mapa = new Map((meus || []).map((i: any) => [i.numero, i]));
-        for (let pg = 1; pg <= 8; pg++) {
+      const desdeItens = p.itens_checado_em ? Date.now() - Date.parse(p.itens_checado_em) : Infinity;
+      const pertoDaSessao = !!s && Math.abs(Date.now() - s) < 3 * 24 * 3600e3;
+      const depoisDaSessao = !!s && Date.now() > s;
+      if (inicial || desdeItens === Infinity || (pertoDaSessao && desdeItens > 8 * 60e3) || (depoisDaSessao && desdeItens > 60 * 60e3)) {
+        const { data: meus } = await db.from("itens").select("numero,participar,situacao_portal").eq("processo_id", p.id);
+        const mapa = new Map((meus || []).map((i: any) => [Number(i.numero), i]));
+        let completo = false;
+        for (let pg = 1; pg <= 45; pg++) {
+          if (pg > 1 && Date.now() > limiteExec - 20000) break;
           const r = await pcpGet(`/v2/licitacao/${codigo}/itens?pagina=${pg}`);
-          if (!r) break;
+          if (!r) { completo = true; break; }
           const lista: any[] = r.isLote ? (r.lotes?.result || []).flatMap((l: any) => l.itens || []) : (r.itens?.result || r.itens || []);
-          if (!Array.isArray(lista) || !lista.length) break;
+          if (!Array.isArray(lista) || !lista.length) { completo = true; break; }
+          const linhasIt: any[] = [];
           for (const it of lista) {
             const num = Number(it.codigo);
             const ant: any = mapa.get(num);
-            const sit = it.situacao?.descricao || null;
+            const sit = it.situacao?.descricao ? String(it.situacao.descricao).trim() : null;
             const lance = it.melhorLance ?? null;
-            if (ant) {
-              if (!inicial && ant.participar && sit && ant.situacao_portal && sit !== ant.situacao_portal) {
-                add({ fonte: "portal", tipo: "item", titulo: `Item ${num} no portal: ${sit}`, detalhe: lance != null ? `Melhor lance: ${money(lance)}` : null, ocorrido_em: new Date().toISOString(), importante: true, chave: `pcp-it-${num}-${hash(sit)}` });
-              }
-              await db.from("itens").update({ situacao_portal: sit, melhor_lance: lance }).eq("processo_id", p.id).eq("numero", num);
-            } else {
-              await db.from("itens").upsert({ processo_id: p.id, numero: num, descricao: it.descricao, quantidade: it.quantidade, unidade: it.unidade, valor_ref: it.valorReferencia ?? null, situacao_portal: sit, melhor_lance: lance }, { onConflict: "processo_id,numero" });
+            if (!inicial && ant && ant.participar && sit && ant.situacao_portal && sit !== String(ant.situacao_portal).trim()) {
+              add({ fonte: "portal", tipo: "item", titulo: `Item ${num} no portal: ${sit}`, detalhe: lance != null ? `Melhor lance: ${money(lance)}` : null, ocorrido_em: new Date().toISOString(), importante: true, chave: `pcp-it-${num}-${hash(sit)}` });
             }
+            linhasIt.push({ processo_id: p.id, numero: num, descricao: it.descricao, quantidade: it.quantidade, unidade: it.unidade, valor_ref: it.valorReferencia ?? null, situacao_portal: sit, melhor_lance: lance });
           }
+          const { error } = await db.from("itens").upsert(linhasIt, { onConflict: "processo_id,numero" });
+          if (error) throw new Error(`Erro ao salvar itens: ${error.message}`);
           const tot = r.isLote ? r.lotes?.total : r.itens?.total;
           const lim = r.isLote ? r.lotes?.limit : r.itens?.limit;
-          if (!tot || !lim || pg * lim >= tot) break;
+          if (!tot || !lim || pg * lim >= tot) { completo = true; break; }
         }
+        if (completo) upd.itens_checado_em = new Date().toISOString();
       }
     }
   }
@@ -442,6 +593,16 @@ async function verificarProcesso(p: any, opts: { inicial?: boolean } = {}) {
     if (pz > agora && pz - agora < 24 * 3600e3) {
       add({ fonte: "lembrete", tipo: "lembrete", titulo: `Prazo de impugnação e esclarecimento termina ${fmtDT(prazo)}`, ocorrido_em: new Date().toISOString(), importante: true, chave: `lemb-prazo-${pz}` });
       upd.lembrete_prazo = true;
+    }
+  }
+
+  // ---- Etapa automática ----
+  if (p.etapa_auto !== false) {
+    const nova = await calcularEtapa({ ...p, ...upd }, empresa);
+    if (nova && nova.etapa !== p.etapa && podeAvancar(p.etapa, nova.etapa)) {
+      upd.etapa = nova.etapa;
+      upd.etapa_motivo = nova.motivo;
+      add({ fonte: "sistema", tipo: "etapa", titulo: `Etapa: ${NOME_ETAPA[nova.etapa]} (automático)`, detalhe: nova.motivo, ocorrido_em: new Date().toISOString(), importante: !inicial && ["ganhamos", "perdemos", "habilitacao"].includes(nova.etapa), historico: false, chave: `etapa-${nova.etapa}` });
     }
   }
 
@@ -689,6 +850,7 @@ Deno.serve(async (req) => {
   const url = new URL(req.url);
   const tarefa = url.searchParams.get("tarefa");
   const deadline = Date.now() + 110_000;
+  limiteExec = deadline;
 
   try {
     if (tarefa) {
