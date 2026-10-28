@@ -86,6 +86,7 @@ textarea.input{height:auto;min-height:80px;padding:10px 11px;resize:vertical}
 .emp{border:1px solid var(--line);border-radius:12px;padding:12px 14px;display:flex;flex-direction:column;gap:10px}
 .emp-h{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap}
 .emp-body{display:flex;flex-direction:column;gap:10px;border-top:1px solid var(--line);padding-top:10px}
+.tag.fav{background:#FEF3C7;color:#92400E}
 .portais{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:8px}
 .portal-op{border:1px solid var(--line);background:var(--surface);border-radius:12px;padding:12px;text-align:left;display:flex;flex-direction:column;gap:4px;cursor:pointer;color:var(--ink)}
 .portal-op:hover{border-color:var(--accent)}
@@ -427,7 +428,7 @@ function Painel({ session, papel, notify }) {
 
   const carregar = useCallback(async () => {
     const [p, nv, eq, cf, em] = await Promise.all([
-      sb.from("processos").select("id,orgao,municipio,numero,objeto,portal,etapa,responsavel,data_sessao,prazo_impugnacao,prazo_esclarecimento,situacao_pncp,situacao_portal,link_origem,controle_pncp,erro,ultima_verificacao,created_at,valor_estimado,empresa_id").order("data_sessao", { ascending: true, nullsFirst: false }),
+      sb.from("processos").select("id,orgao,municipio,numero,objeto,portal,etapa,responsavel,data_sessao,prazo_impugnacao,prazo_esclarecimento,situacao_pncp,situacao_portal,link_origem,controle_pncp,erro,ultima_verificacao,created_at,valor_estimado,empresa_id,favorito,etapa_auto,etapa_motivo").order("data_sessao", { ascending: true, nullsFirst: false }),
       sb.rpc("nao_vistas"),
       sb.from("equipe").select("*").order("nome"),
       sb.from("config").select("*").eq("id", 1).single(),
@@ -553,7 +554,7 @@ function Inicio({ ctx }) {
               {proximas.map((p) => (
                 <div key={p.id} className="lrow click" onClick={() => abrir(p.id)} role="button" tabIndex={0} onKeyDown={(e) => e.key === "Enter" && abrir(p.id)}>
                   <div className="datebox"><b>{new Date(p.data_sessao).toLocaleDateString("pt-BR", { day: "2-digit", timeZone: "America/Sao_Paulo" })}</b><small>{new Date(p.data_sessao).toLocaleDateString("pt-BR", { month: "short", timeZone: "America/Sao_Paulo" }).replace(".", "")}</small></div>
-                  <div className="lmain"><span className="lt">{p.orgao}</span><span className="ls"><PortalTag k={p.portal} />{p.numero && <span>Nº {p.numero}</span>}<EtapaTag id={p.etapa} /></span></div>
+                  <div className="lmain"><span className="lt">{p.orgao}</span><span className="ls">{p.favorito && ["analise", "participar"].includes(p.etapa) && <span className="tag fav">⭐ Vamos participar</span>}<PortalTag k={p.portal} />{p.numero && <span>Nº {p.numero}</span>}<EtapaTag id={p.etapa} /></span></div>
                   <div className="when"><b>{fmtHora(p.data_sessao)}</b>{falta(p.data_sessao)}</div>
                 </div>
               ))}
@@ -631,6 +632,20 @@ function Radar({ ctx }) {
     } catch (err) { notify(errMsg(err)); }
     setOcupado("");
   };
+  const favoritar = async (e) => {
+    setOcupado(e.id);
+    try {
+      const r = await chamarRobo({ acao: "cadastrar", entrada: e.controle_pncp });
+      const { data: pr } = await sb.from("processos").select("etapa").eq("id", r.id).maybeSingle();
+      const patch = { favorito: true };
+      if (pr && pr.etapa === "analise") patch.etapa = "participar";
+      await sb.from("processos").update(patch).eq("id", r.id);
+      setLista((l) => l.map((x) => (x.id === e.id ? { ...x, status: "acompanhando" } : x)));
+      notify("⭐ Marcado como “Vamos participar”. Ele aparece em Processos e na Agenda.");
+      ctx.carregar();
+    } catch (err) { notify(errMsg(err)); }
+    setOcupado("");
+  };
   const marcar = async (e, status) => {
     const { error } = await sb.from("editais").update({ status }).eq("id", e.id);
     if (error) return notify(errMsg(error));
@@ -691,7 +706,8 @@ function Radar({ ctx }) {
                 </div>
                 {e.termos && e.termos.length > 0 && <div className="termos">{e.termos.slice(0, 6).map((t) => <span key={t}>{t}</span>)}</div>}
                 <div className="row-inline">
-                  {pode && e.status !== "acompanhando" && <button className="btn sm" onClick={() => acompanhar(e)} disabled={ocupado === e.id}>{ocupado === e.id ? <><span className="spin" />Cadastrando…</> : "Acompanhar"}</button>}
+                  {pode && e.status !== "acompanhando" && <button className="btn sm" onClick={() => favoritar(e)} disabled={ocupado === e.id} title="Ainda não enviamos proposta, mas vamos participar desta sessão">{ocupado === e.id ? <><span className="spin" />Marcando…</> : "⭐ Vamos participar"}</button>}
+                  {pode && e.status !== "acompanhando" && <button className="btn ghost sm" onClick={() => acompanhar(e)} disabled={ocupado === e.id}>Só acompanhar</button>}
                   {pode && e.status === "novo" && <button className="btn ghost sm" onClick={() => marcar(e, "descartado")}>Descartar</button>}
                   {pode && e.status === "descartado" && <button className="btn ghost sm" onClick={() => marcar(e, "novo")}>Voltar ao radar</button>}
                   {e.link_origem && <a className="btn ghost sm" href={e.link_origem} target="_blank" rel="noopener noreferrer"><Icon name="ext" size={14} />Portal</a>}
@@ -714,6 +730,7 @@ function Processos({ ctx }) {
   const { procs, naoVistas, abrir, pode, equipe, empresas } = ctx;
   const [filtro, setFiltro] = useState("ativos");
   const [emp, setEmp] = useState("todas");
+  const vamos = (p) => p.favorito && ["analise", "participar"].includes(p.etapa);
   const [q, setQ] = useState("");
   const [novo, setNovo] = useState(false);
   const variasEmpresas = empresas.length > 1;
@@ -721,7 +738,7 @@ function Processos({ ctx }) {
   const nomeDe = (e) => (equipe.find((p) => p.email === e) || {}).nome || (e ? e.split("@")[0] : "—");
   const lista = (procs || []).filter((p) =>
     (emp === "todas" || (emp === "sem" ? !p.empresa_id : p.empresa_id === emp)) &&
-    (filtro === "todos" || (filtro === "ativos" ? ATIVAS.includes(p.etapa) : filtro === "ganhos" ? p.etapa === "ganhamos" : ["perdemos", "desistimos", "encerrado"].includes(p.etapa))) &&
+    (filtro === "todos" || (filtro === "vamos" ? vamos(p) : filtro === "ativos" ? ATIVAS.includes(p.etapa) : filtro === "ganhos" ? p.etapa === "ganhamos" : ["perdemos", "desistimos", "encerrado"].includes(p.etapa))) &&
     (!q || `${p.orgao} ${p.municipio} ${p.numero} ${p.objeto}`.toLowerCase().includes(q.toLowerCase())));
   const ordenada = [...lista].sort((a, b) => {
     const na = naoVistas[a.id] ? 1 : 0, nb = naoVistas[b.id] ? 1 : 0;
@@ -737,7 +754,7 @@ function Processos({ ctx }) {
       </div>
       <div className="row-inline" style={{ justifyContent: "space-between" }}>
         <div className="seg">
-          {[["ativos", "Ativos"], ["ganhos", "Ganhos"], ["perdidos", "Perdidos / encerrados"], ["todos", "Todos"]].map(([k, l]) => <button key={k} className={filtro === k ? "on" : ""} onClick={() => setFiltro(k)}>{l}</button>)}
+          {[["ativos", "Ativos"], ["vamos", `⭐ Vamos participar${(procs || []).filter(vamos).length ? ` (${(procs || []).filter(vamos).length})` : ""}`], ["ganhos", "Ganhos"], ["perdidos", "Perdidos / encerrados"], ["todos", "Todos"]].map(([k, l]) => <button key={k} className={filtro === k ? "on" : ""} onClick={() => setFiltro(k)}>{l}</button>)}
         </div>
         <input id="proc-busca" className="input" style={{ maxWidth: 300 }} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar órgão, número ou objeto" aria-label="Buscar processos" />
       </div>
@@ -761,7 +778,7 @@ function Processos({ ctx }) {
                   {nv && <span className={`badge${Number(nv.importantes) ? "" : " soft"}`} title="Movimentações novas">{nv.qtd}</span>}
                 </div>
                 <div className="hint clamp2" style={{ color: "var(--ink-2)" }}>{p.objeto}</div>
-                <div className="row-inline"><EtapaTag id={p.etapa} /><PortalTag k={p.portal} />{variasEmpresas && <span className="tag">{p.empresa_id ? nomeCurto(empDe(p.empresa_id)) : "Sem empresa"}</span>}</div>
+                <div className="row-inline">{vamos(p) && <span className="tag fav">⭐ Vamos participar</span>}<EtapaTag id={p.etapa} /><PortalTag k={p.portal} />{variasEmpresas && <span className="tag">{p.empresa_id ? nomeCurto(empDe(p.empresa_id)) : "Sem empresa"}</span>}</div>
                 <div className="estado">
                   {p.data_sessao ? <>Sessão {fmtDH(p.data_sessao)} · <b>{falta(p.data_sessao)}</b></> : "Data da sessão não informada"}
                   {(p.situacao_portal || p.situacao_pncp) && <div className="hint">{p.situacao_portal || p.situacao_pncp}</div>}
@@ -797,6 +814,7 @@ function NovoProcesso({ ctx, onClose }) {
   const [portalSel, setPortalSel] = useState(null);
   const [acessos, setAcessos] = useState(null);
   const [v, setV] = useState("");
+  const [fav, setFav] = useState(true);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [res, setRes] = useState(null);
@@ -807,7 +825,7 @@ function NovoProcesso({ ctx, onClose }) {
   const puxar = async () => {
     setBusy(true); setErr(""); setRes(null);
     try {
-      const r = await chamarRobo({ acao: "sincronizar", portal: "pcp", empresa_id: empId || null });
+      const r = await chamarRobo({ acao: "sincronizar", portal: "pcp", empresa_id: empId || null }, "licita-sinc");
       setRes(r.resultados || []);
       ctx.carregar();
     } catch (e2) { setErr(errMsg(e2)); }
@@ -824,7 +842,11 @@ function NovoProcesso({ ctx, onClose }) {
     setBusy(true); setErr("");
     try {
       const r = await chamarRobo({ acao: "cadastrar", entrada: v.trim(), empresa_id: empId || null });
-      ctx.notify(r.existente ? "Esse processo já estava cadastrado" : "Processo cadastrado. O robô já está acompanhando.");
+      if (fav) {
+        const { data: pr } = await sb.from("processos").select("etapa").eq("id", r.id).maybeSingle();
+        await sb.from("processos").update({ favorito: true, ...(pr && pr.etapa === "analise" ? { etapa: "participar" } : {}) }).eq("id", r.id);
+      }
+      ctx.notify(r.existente ? "Esse processo já estava cadastrado" : fav ? "⭐ Processo cadastrado como “Vamos participar”." : "Processo cadastrado. O robô já está acompanhando.");
       ctx.carregar(); onClose(); ctx.abrir(r.id);
     } catch (e2) { setErr(errMsg(e2)); }
     setBusy(false);
@@ -856,7 +878,7 @@ function NovoProcesso({ ctx, onClose }) {
                 return (
                   <button key={p.k} type="button" className="portal-op" onClick={() => escolher(p)} disabled={acessos === null && p.auto}>
                     <span className="row-inline" style={{ gap: 6 }}><i className="pdot" style={{ background: portal(p.k).cor }} /><b>{portal(p.k).nome}</b></span>
-                    <small>{auto ? "⚡ Puxa sozinho os processos do seu login" : p.auto ? "Cadastre o login em Ajustes para puxar sozinho" : "Pelo link do processo"}</small>
+                    <small>{auto ? "⚡ Puxa sozinho o “Acesso Rápido” (propostas enviadas)" : p.auto ? "Cadastre o login em Ajustes para puxar sozinho" : "Pelo link do processo"}</small>
                   </button>
                 );
               })}
@@ -867,7 +889,7 @@ function NovoProcesso({ ctx, onClose }) {
         {passo === "auto" && (
           <div className="stack" style={{ gap: 12 }}>
             {busy && (
-              <div className="banner info"><span className="spin" /><span>Entrando no portal com o login <b>{ac ? ac.usuario : ""}</b>{empId ? ` (${empNome(empId)})` : ""} e lendo “Seus Processos”… leva uns 30 segundos.</span></div>
+              <div className="banner info"><span className="spin" /><span>Entrando no portal com o login <b>{ac ? ac.usuario : ""}</b>{empId ? ` (${empNome(empId)})` : ""} e lendo o “Acesso Rápido” (processos com proposta enviada)… leva uns 30 segundos.</span></div>
             )}
             {res && res.map((r, i) => (
               <div key={i} className="stack" style={{ gap: 8 }}>
@@ -875,7 +897,7 @@ function NovoProcesso({ ctx, onClose }) {
                   <>
                     <div className="banner info"><span>
                       {r.novos.length ? <><b>{r.novos.length} processo(s) novo(s)</b> cadastrado(s) e já em acompanhamento.</> : <b>Nenhum processo novo.</b>}
-                      {" "}{r.ja} já estava(m) no LicitaPro · {r.ignorados} encerrado(s) ou com sessão há mais de 60 dias, ignorado(s).
+                      {" "}{r.ja} já estava(m) no LicitaPro · {r.ignorados} finalizado(s) ou cancelado(s), ignorado(s).
                       {r.aviso ? ` ${r.aviso}` : ""}
                     </span></div>
                     {r.novos.length > 0 && (
@@ -913,6 +935,7 @@ function NovoProcesso({ ctx, onClose }) {
               <label htmlFor="np-link">Link ou número do processo</label>
               <textarea id="np-link" className="input" rows={3} value={v} onChange={(e) => setV(e.target.value)} placeholder={portalSel.k === "pcp" ? "https://www.portaldecompraspublicas.com.br/processos/MG/…" : "https://pncp.gov.br/app/editais/…"} />
             </div>
+            <label className="toggle" style={{ whiteSpace: "normal" }}><input type="checkbox" checked={fav} onChange={(e) => setFav(e.target.checked)} />⭐ Vamos participar (ainda não enviamos a proposta)</label>
             {err && <p className="err">{err}</p>}
             <div className="row-inline">
               <button className="btn" disabled={busy}>{busy ? <><span className="spin" />Buscando o processo…</> : "Cadastrar e acompanhar"}</button>
@@ -1005,7 +1028,14 @@ function Processo({ id, ctx, onBack }) {
       <div>
         <button className="back" onClick={onBack}><Icon name="left" size={18} />Processos</button>
         <div className="phead">
-          <div className="row-inline"><PortalTag k={p.portal} /><EtapaTag id={p.etapa} />{p.modalidade && <span className="tag">{p.modalidade}</span>}</div>
+          <div className="row-inline">
+            <PortalTag k={p.portal} /><EtapaTag id={p.etapa} />{p.modalidade && <span className="tag">{p.modalidade}</span>}
+            {pode ? (
+              <button type="button" className={`btn sm ${p.favorito ? "" : "ghost"}`} onClick={() => salvar(p.favorito ? { favorito: false } : { favorito: true, ...(p.etapa === "analise" ? { etapa: "participar" } : {}) }, p.favorito ? "Removido de “Vamos participar”" : "⭐ Marcado como “Vamos participar”")}>
+                {p.favorito ? "⭐ Vamos participar" : "☆ Marcar: vamos participar"}
+              </button>
+            ) : p.favorito && <span className="tag fav">⭐ Vamos participar</span>}
+          </div>
           <h1>{p.orgao}{p.numero ? ` · Nº ${p.numero}` : ""}</h1>
           <div className="hint clamp3" style={{ color: "var(--ink-2)", fontSize: 13.5 }}>{p.objeto}</div>
         </div>
@@ -1407,7 +1437,7 @@ function Acessos({ empresa, acessos, admin, notify, recarregar }) {
                 <span className="ls">Atualizado {fmtDH(a.atualizado_em)}{a.atualizado_por ? ` por ${a.atualizado_por.split("@")[0]}` : ""}</span>
                 {a.portal === "pcp" && (
                   <span className="ls" style={{ color: a.sinc_em ? (a.sinc_ok ? "var(--accent-ink)" : "var(--red, #B91C1C)") : "var(--muted)" }}>
-                    {a.sinc_em ? `${a.sinc_ok ? "✓" : "⚠"} Última leitura de “Seus Processos” ${fmtDH(a.sinc_em)}: ${a.sinc_msg || ""}` : "Ainda não puxou processos com esse login"}
+                    {a.sinc_em ? `${a.sinc_ok ? "✓" : "⚠"} Última leitura do “Acesso Rápido” ${fmtDH(a.sinc_em)}: ${a.sinc_msg || ""}` : "Ainda não puxou processos com esse login"}
                   </span>
                 )}
               </div>

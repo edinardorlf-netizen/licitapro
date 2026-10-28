@@ -101,8 +101,8 @@ export function errMsg(e) {
   return m || "Algo deu errado. Tente de novo.";
 }
 
-export async function chamarRobo(body) {
-  const { data, error } = await sb.functions.invoke("licita", { body });
+export async function chamarRobo(body, funcao = "licita") {
+  const { data, error } = await sb.functions.invoke(funcao, { body });
   if (error) {
     let msg = error.message;
     try { const j = await error.context.json(); if (j && j.erro) msg = j.erro; } catch (e) { /* ignora */ }

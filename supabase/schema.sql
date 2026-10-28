@@ -430,3 +430,22 @@ grant execute on function public.acessos_status() to authenticated;
 -- select cron.schedule('licita-acompanhar', '*/2 * * * *', ...);
 -- select cron.schedule('licita-radar', '7 * * * *', ...);
 -- select cron.schedule('licita-sincronizar', '40 9,22 * * *', ...);
+
+-- =====================================================================
+-- Etapas automáticas, arrematante/vencedor por item e "Vamos participar"
+-- =====================================================================
+alter table public.processos add column if not exists etapa_auto boolean not null default true;
+alter table public.processos add column if not exists etapa_motivo text;
+alter table public.processos add column if not exists itens_checado_em timestamptz;
+alter table public.processos add column if not exists chat_historico_ok boolean not null default false;
+alter table public.processos add column if not exists favorito boolean not null default false;
+alter table public.processos drop constraint if exists processos_etapa_check;
+alter table public.processos add constraint processos_etapa_check
+  check (etapa in ('analise','participar','proposta','disputa','habilitacao','ganhamos','perdemos','desistimos','encerrado'));
+alter table public.itens add column if not exists arrematante text;
+alter table public.itens add column if not exists arrematante_lance numeric(16,4);
+alter table public.itens add column if not exists arrematante_em timestamptz;
+alter table public.itens add column if not exists vencedor_portal text;
+alter table public.itens add column if not exists nosso_arremata boolean not null default false;
+alter table public.itens add column if not exists nosso_vence boolean not null default false;
+-- O agendamento "licita-sincronizar" chama a função licita-sinc (Acesso Rápido do portal).

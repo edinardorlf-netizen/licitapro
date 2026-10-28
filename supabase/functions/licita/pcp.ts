@@ -135,7 +135,7 @@ export function lerSeusProcessos(html: string): ProcPortal[] {
     const orgao = limpa((linha.match(/id="unidadeTexto\d+"[^>]*>([\s\S]*?)<\/p>/i) || [])[1] || "");
     const objeto = limpa((linha.match(/id="objetoTexto\d+"[^>]*>([\s\S]*?)<\/p>/i) || [])[1] || (linha.match(/<td class="td190">\s*<a[^>]*title="([^"]*)"/i) || [])[1] || "");
     const abertura = dataBR((linha.match(/<td class="td110"><span>([^<]+)<\/span>/i) || [])[1] || "");
-    const situacao = (linha.match(/class="td70 alignCenter">\s*<a href="#" title="([^"]+)"/i) || [])[1] || "";
+    const situacao = (linha.match(/<a href="#" title="([^"]+)">\s*<img src="\/\d\/img\/icoGray/i) || linha.match(/class="td70 alignCenter">\s*<a href="#" title="([^"]+)"/i) || [])[1] || "";
     out.push({ codigo: Number(cod[1]), numero, orgao, objeto, abertura, situacao });
   }
   return out;
@@ -148,4 +148,16 @@ export const urlSeusProcessos = (pg: number) =>
 export function caminhoPublico(htmlDados: string): string | null {
   const m = htmlDados.match(/portaldecompraspublicas\.com\.br\/processos\/([A-Z]{2}\/[^"'\s<>?#]+)/i);
   return m ? m[1].replace(/\/+$/, "") : null;
+}
+
+// "Suas Propostas": processos em que o login enviou proposta.
+export const urlSuasPropostas = (pg: number) =>
+  `${PCP_OP}/4/SuasPropostas/?rdCampoPesquisado=&btBuscar=Buscar&ttBusca=&ttOrderBy=&ttPagina=${pg}&ttOrgao=&ttAbertura=&ttObjeto=&slCD_UF=&slCD_GRUPO_MATERIAL=0&slCD_CLASSE_MATERIAL=0&slCD_MODALIDADE_LICITACAO=&slCD_TIPO_REALIZACAO_LICITACAO=&slCD_TIPO_JULGAMENTO_LICITACAO=`;
+
+// Tabela "Acesso Rápido - Sessões Públicas/Suas Propostas" do painel inicial do fornecedor.
+export function lerAcessoRapido(htmlPainel: string): ProcPortal[] {
+  const i = htmlPainel.search(/id="linhasFornecimento"/i);
+  if (i < 0) return [];
+  const fim = htmlPainel.indexOf("</table>", i);
+  return lerSeusProcessos(htmlPainel.slice(i, fim > i ? fim : undefined));
 }
