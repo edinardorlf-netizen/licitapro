@@ -45,7 +45,7 @@ export class Sessao {
   debug = false;
 
   // Faz a requisição seguindo os redirecionamentos e guardando os cookies.
-  async ir(url: string, init: { method?: string; body?: string; tipo?: string } = {}) {
+  async ir(url: string, init: { method?: string; body?: string; tipo?: string; extra?: Record<string, string> } = {}) {
     let atual = url;
     let method = init.method || "GET";
     let body: string | undefined = init.body;
@@ -57,6 +57,7 @@ export class Sessao {
       const ck = this.jar.cabecalho(atual);
       if (ck) headers.Cookie = ck;
       if (body) headers["Content-Type"] = init.tipo || "application/x-www-form-urlencoded";
+      if (init.extra) Object.assign(headers, init.extra);
       const r = await fetch(atual, { method, body, headers, redirect: "manual" });
       this.jar.guardar(atual, r);
       const loc = r.headers.get("location");
@@ -71,7 +72,7 @@ export class Sessao {
     throw new Error("O portal redirecionou demais (login em loop).");
   }
 
-  async texto(url: string, init: { method?: string; body?: string } = {}) {
+  async texto(url: string, init: { method?: string; body?: string; extra?: Record<string, string> } = {}) {
     const { url: final, status, res } = await this.ir(url, init);
     const buf = await res.arrayBuffer();
     const host = new URL(final).hostname;

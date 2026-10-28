@@ -889,7 +889,7 @@ function NovoProcesso({ ctx, onClose }) {
         {passo === "auto" && (
           <div className="stack" style={{ gap: 12 }}>
             {busy && (
-              <div className="banner info"><span className="spin" /><span>Entrando no portal com o login <b>{ac ? ac.usuario : ""}</b>{empId ? ` (${empNome(empId)})` : ""} e lendo o “Acesso Rápido” (processos com proposta enviada)… leva uns 30 segundos.</span></div>
+              <div className="banner info"><span className="spin" /><span>Entrando no portal com o login <b>{ac ? ac.usuario : ""}</b>{empId ? ` (${empNome(empId)})` : ""} lendo o “Acesso Rápido” e conferindo, sala por sala, os itens com proposta enviada… leva até 1 minuto.</span></div>
             )}
             {res && res.map((r, i) => (
               <div key={i} className="stack" style={{ gap: 8 }}>
@@ -897,9 +897,15 @@ function NovoProcesso({ ctx, onClose }) {
                   <>
                     <div className="banner info"><span>
                       {r.novos.length ? <><b>{r.novos.length} processo(s) novo(s)</b> cadastrado(s) e já em acompanhamento.</> : <b>Nenhum processo novo.</b>}
-                      {" "}{r.ja} já estava(m) no LicitaPro · {r.ignorados} finalizado(s) ou cancelado(s), ignorado(s).
+                      {" "}{r.ja} já estava(m) no LicitaPro.
                       {r.aviso ? ` ${r.aviso}` : ""}
                     </span></div>
+                    {(r.semProposta || []).length > 0 && (
+                      <div className="hint">Ficaram de fora por <b>não terem nenhum item com proposta deste login</b> (aba “Itens com proposta enviada” da sala): {r.semProposta.join("; ")}.{(r.removidos || []).length ? ` Removidos do LicitaPro: ${r.removidos.join("; ")}.` : ""}</div>
+                    )}
+                    {(r.naoConferidos || []).length > 0 && (
+                      <div className="hint">Não deu para abrir a sala agora (ex.: suspenso): {r.naoConferidos.join("; ")}. O robô confere de novo na próxima rodada.</div>
+                    )}
                     {r.novos.length > 0 && (
                       <div className="list">
                         {r.novos.map((n) => (

@@ -24,8 +24,40 @@ const json = (body: unknown, status = 200) => new Response(JSON.stringify(body),
 const ENCERRADO = /finalizad|cancelad|revogad|anulad|desert|fracassad/i;
 const ORDEM: Record<string, number> = { analise: 0, participar: 1, proposta: 2 };
 
+// Dentro da sala do processo, aba "Itens com proposta enviada pelo fornecedor" (param=10).
+// Devolve os números dos itens em que ESTE login enviou proposta (null = não deu para conferir).
+let ultimoDiag = "";
+async function itensComProposta(s: Sessao, codigo: number, deadline: number): Promise<number[] | null> {
+  const salaUrl = `${PCP_OP}/4/SessaoPublica/?ttCD_CHAVE=${codigo}`;
+  const sala = await s.texto(salaUrl);
+  ultimoDiag = `sala→${sala.url.replace(PCP_OP, "")} (${sala.status}, ${sala.html.length}b)`;
+  const itens = new Set<number>();
+  let total: number | null = null;
+  for (let pg = 1; pg <= 50; pg++) {
+    if (pg > 1 && Date.now() > deadline - 20000) return null;
+    const { html, status, url } = await s.texto(`${PCP_OP}/4/SessaoPublica/lances/htmlAba.asp?param=10`, {
+      method: "POST",
+      body: `param=10&ttCD_LICITACAO=${codigo}&ttPagina=${pg}&ttPaginaItemLote=1`,
+      extra: { Referer: salaUrl, Origin: PCP_OP, "X-Requested-With": "XMLHttpRequest", Accept: "text/html, */*; q=0.01" },
+    });
+    const t = html.match(/Total de Registros:\s*(\d+)/i);
+    if (!t) {
+      ultimoDiag += ` · aba→${url.replace(PCP_OP, "")} (${status}): ${html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 160)}`;
+      return pg === 1 ? null : [...itens];
+    }
+    total = Number(t[1]);
+    for (const tr of html.split(/<tr[\s>]/i).slice(1)) {
+      const td = tr.match(/<td[^>]*>([\s\S]*?)<\/td>/i);
+      const n = td ? td[1].replace(/<[^>]+>/g, "").trim() : "";
+      if (/^\d{1,5}$/.test(n)) itens.add(Number(n));
+    }
+    if (total === 0 || itens.size >= total) break;
+  }
+  return [...itens];
+}
+
 async function sincronizarAcesso(a: any, deadline: number, quem: string) {
-  const r = { portal: a.portal, empresa_id: a.empresa_id, lidos: 0, novos: [] as any[], ja: 0, ignorados: 0, aviso: "" };
+  const r = { portal: a.portal, empresa_id: a.empresa_id, lidos: 0, novos: [] as any[], ja: 0, ignorados: 0, semProposta: [] as string[], naoConferidos: [] as string[], removidos: [] as string[], aviso: "" };
   const { data: senha, error: eS } = await db.rpc("senha_acesso", { p_id: a.id });
   if (eS || !senha) throw new Error("A senha desse acesso não está guardada. Cadastre de novo em Ajustes → Empresas.");
 
@@ -57,13 +89,40 @@ async function sincronizarAcesso(a: any, deadline: number, quem: string) {
 
     const codigos = candidatos.map((x) => x.codigo);
     const { data: existentes } = codigos.length
-      ? await db.from("processos").select("id,pcp_codigo,etapa,etapa_auto").in("pcp_codigo", codigos)
+      ? await db.from("processos").select("id,pcp_codigo,etapa,etapa_auto,created_by,favorito,orgao,numero").in("pcp_codigo", codigos)
       : { data: [] as any[] };
     const porCodigo = new Map((existentes || []).map((p: any) => [Number(p.pcp_codigo), p]));
 
     for (const x of candidatos) {
       const ja = porCodigo.get(x.codigo);
+      if (Date.now() > deadline - 12000) { r.aviso = "Ficaram processos para a próxima rodada."; break; }
+
+      // Confere na sala se este login enviou proposta em algum item
+      const itens = await itensComProposta(s, x.codigo, deadline);
+      const nome = `${(x.orgao || "").slice(0, 60)} ${x.numero ? "Nº " + x.numero.split(" ")[0] : ""}`.trim();
+      if (itens === null) {
+        // Sala indisponível (ex.: suspenso antes da abertura): não cadastra nem remove; confere de novo na próxima rodada
+        r.naoConferidos.push(`${nome} [${ultimoDiag}]`);
+        r.ignorados++;
+        continue;
+      }
+      if (!itens.length) {
+        r.semProposta.push(nome);
+        r.ignorados++;
+        // Cadastrado antes pelo robô, sem anotação da equipe e sem estrela: sai do acompanhamento
+        if (ja && String(ja.created_by || "").startsWith("robô") && !ja.favorito) {
+          const { count } = await db.from("movimentacoes").select("id", { count: "exact", head: true }).eq("processo_id", ja.id).eq("fonte", "equipe");
+          if (!count) { await db.from("processos").delete().eq("id", ja.id); r.removidos.push(nome); }
+        }
+        continue;
+      }
+      // Marca como "Vamos disputar" os itens com proposta deste login
+      const marcar = itens.map((n) => ({ processo_id: "", numero: n, participar: true }));
+
       if (ja) {
+        for (let i = 0; i < marcar.length; i += 300) {
+          await db.from("itens").upsert(marcar.slice(i, i + 300).map((m) => ({ ...m, processo_id: ja.id })), { onConflict: "processo_id,numero" });
+        }
         r.ja++;
         // Estava como "Em análise" ou "Vamos participar" e a proposta apareceu no portal → "Proposta enviada"
         if (ja.etapa_auto !== false && (ORDEM[ja.etapa] ?? 9) < 2) {
@@ -72,7 +131,7 @@ async function sincronizarAcesso(a: any, deadline: number, quem: string) {
         }
         continue;
       }
-      if (Date.now() > deadline - 8000 || r.novos.length >= 25) { r.aviso = "Ficaram processos para a próxima rodada."; break; }
+      if (r.novos.length >= 25) { r.aviso = "Ficaram processos para a próxima rodada."; break; }
 
       const dados = await s.texto(`${PCP_OP}/4/Pregoes/DadosPregao/?slA=Edit&ttCD_CHAVE=${x.codigo}`);
       const caminho = caminhoPublico(dados.html);
@@ -99,8 +158,11 @@ async function sincronizarAcesso(a: any, deadline: number, quem: string) {
         if (/duplicate|unique/i.test(error.message)) { r.ja++; continue; }
         throw new Error(`Erro ao cadastrar ${x.numero}: ${error.message}`);
       }
+      for (let i = 0; i < marcar.length; i += 300) {
+        await db.from("itens").upsert(marcar.slice(i, i + 300).map((m) => ({ ...m, processo_id: criado.id })), { onConflict: "processo_id,numero" });
+      }
       if (edital) await db.from("editais").update({ status: "acompanhando" }).eq("id", edital.id);
-      await db.from("movimentacoes").insert({ processo_id: criado.id, fonte: "sistema", tipo: "cadastro", titulo: "Processo puxado do “Acesso Rápido” do portal (proposta enviada)", detalhe: `Login ${a.usuario}`, autor: "robô", ocorrido_em: new Date().toISOString(), chave: "cadastro" });
+      await db.from("movimentacoes").insert({ processo_id: criado.id, fonte: "sistema", tipo: "cadastro", titulo: "Processo puxado do “Acesso Rápido” do portal (proposta enviada)", detalhe: `Login ${a.usuario} · proposta em ${itens.length} item(ns)`, autor: "robô", ocorrido_em: new Date().toISOString(), chave: "cadastro" });
       r.novos.push(criado);
     }
   } finally {
@@ -119,7 +181,7 @@ async function sincronizar(empresaId: string | undefined, deadline: number, quem
     if (Date.now() > deadline - 15000) break;
     try {
       const r = await sincronizarAcesso(a, deadline, quem);
-      await db.from("acessos").update({ sinc_em: new Date().toISOString(), sinc_ok: true, sinc_msg: `${r.novos.length} novo(s), ${r.ja} já acompanhado(s), ${r.ignorados} encerrado(s) ignorado(s)` }).eq("id", a.id);
+      await db.from("acessos").update({ sinc_em: new Date().toISOString(), sinc_ok: true, sinc_msg: `${r.novos.length} novo(s), ${r.ja} já acompanhado(s), ${r.ignorados} sem proposta ou encerrado(s)${r.removidos.length ? `, ${r.removidos.length} removido(s)` : ""}` }).eq("id", a.id);
       resultados.push(r);
     } catch (e) {
       const msg = String((e as Error).message || e);
