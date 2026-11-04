@@ -1539,7 +1539,7 @@ function ItensGanhos({ lista, pode, notify, onMudou, unico, abrir }) {
             <tbody>
               {filtrada.map((g) => (
                 <tr key={g.id}>
-                  {!unico && <td>{g.processos ? <button type="button" className="linkbtn" style={{ fontSize: 12.5, textAlign: "left" }} onClick={() => abrir && abrir(g.processo_id)}>{g.processos.orgao}{g.processos.numero ? ` · ${g.processos.numero}` : ""}</button> : "—"}</td>}
+                  {!unico && <td style={{ minWidth: 170 }}>{g.processos ? <button type="button" className="linkbtn" style={{ fontSize: 12.5, textAlign: "left" }} onClick={() => abrir && abrir(g.processo_id)}>{g.processos.orgao}{g.processos.numero ? ` · ${g.processos.numero}` : ""}</button> : "—"}</td>}
                   <td>{g.numero}{g.origem === "manual" ? <div className="hint">manual</div> : null}</td>
                   <td style={{ minWidth: 220 }}><div className="clamp3">{g.descricao}</div></td>
                   <td className="n">{pode ? <input className="input num mini" defaultValue={fmtIn(g.quantidade)} onBlur={(e) => salvarCampo(g, "quantidade", e.target.value)} aria-label={`Quantidade do item ${g.numero}`} /> : num(g.quantidade)} <span className="hint">{g.unidade || ""}</span></td>
