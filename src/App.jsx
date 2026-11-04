@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import Simulador from "./Simulador.jsx";
 import {
   sb, appUrl, portal, PORTAIS, ETAPAS, etapa, ATIVAS, A_LANCAR, ACOMPANHANDO, CATEGORIAS, RESULTADOS, resultado, ganhou, PAPEIS, fmtData, fmtDataCurta, fmtHora, fmtDH, diaChave, hojeChave,
   diaLongo, falta, brl, num, parseNum, fmtIn, valorMinimo, errMsg, chamarRobo, iniciais,
@@ -163,6 +164,9 @@ textarea.input{height:auto;min-height:80px;padding:10px 11px;resize:vertical}
 .itab{width:100%;border-collapse:collapse;font-size:12.5px}
 .itab th,.itab td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line-2);vertical-align:top}
 .itab td.n{text-align:right;white-space:nowrap}
+.simlog{display:flex;flex-direction:column;max-height:420px;overflow:auto;font-size:12.5px}
+.simrow{display:grid;grid-template-columns:52px 64px 90px 1fr;gap:8px;padding:5px 4px;border-bottom:1px solid var(--line-2)}
+.simrow.nosso{background:#EFF6FF}.simrow.ganhou{background:#DCFCE7}.simrow.parar{background:#FEF3C7}.simrow.erro{background:#FEE2E2}
 .input.mini{padding:4px 6px;font-size:12.5px;width:86px;min-height:0}
 .pgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px}
 .pcard .ptop{display:flex;justify-content:space-between;gap:8px;align-items:flex-start}
@@ -251,6 +255,7 @@ const Icon = ({ name, size = 20 }) => {
     refresh: <><path d="M20 11a8 8 0 1 0-2.3 5.7" /><path d="M20 4v7h-7" /></>,
     logout: <><path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3" /><path d="M10 17l5-5-5-5M15 12H4" /></>,
     search: <><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></>,
+    bot: <><rect x="4" y="8" width="16" height="11" rx="3" /><path d="M12 4v4M9 13h.01M15 13h.01M9.5 16.5h5" /></>,
   }[name];
   return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{p}</svg>;
 };
@@ -270,6 +275,7 @@ const TABS = [
   { id: "radar", nome: "Radar", icon: "radar" },
   { id: "processos", nome: "Processos", icon: "folder" },
   { id: "agenda", nome: "Agenda", icon: "cal" },
+  { id: "robo", nome: "Robô", icon: "bot" },
   { id: "ajustes", nome: "Ajustes", icon: "cog" },
 ];
 
@@ -494,6 +500,7 @@ function Painel({ session, papel, notify }) {
   const abrir = (id) => { setTab("processos"); setProcId(id); };
   const ir = (t) => { setProcId(null); setTab(t); };
   const totalNV = Object.values(naoVistas).reduce((a, r) => a + Number(r.importantes || 0), 0);
+  const abas = celular ? TABS.filter((t) => t.id !== "robo") : TABS; // simulação do robô só no computador
   const ctx = { session, email, papel, pode, podeEquipe, celular, equipe, config, empresas, procs, naoVistas, carregar, notify, abrir, ir, setConfig };
 
   let tela;
@@ -502,6 +509,7 @@ function Painel({ session, papel, notify }) {
   else if (tab === "radar") tela = <Radar ctx={ctx} />;
   else if (tab === "processos") tela = <Processos ctx={ctx} />;
   else if (tab === "agenda") tela = <Agenda ctx={ctx} />;
+  else if (tab === "robo") tela = <Simulador ctx={ctx} />;
   else tela = <Ajustes ctx={ctx} />;
 
   return (
@@ -509,7 +517,7 @@ function Painel({ session, papel, notify }) {
       <aside className="side">
         <div className="brand"><span className="brand-mark"><Icon name="radar" size={18} /></span>LicitaPro</div>
         <nav className="nav" aria-label="Seções">
-          {TABS.map((t) => (
+          {abas.map((t) => (
             <button key={t.id} className={tab === t.id ? "on" : ""} onClick={() => ir(t.id)} aria-current={tab === t.id ? "page" : undefined}>
               <Icon name={t.icon} />{t.nome}
               {t.id === "processos" && totalNV > 0 && <span className="badge">{totalNV}</span>}
@@ -524,7 +532,7 @@ function Painel({ session, papel, notify }) {
       </aside>
       <main className="main">{tela}</main>
       <nav className="bnav" aria-label="Seções">
-        {TABS.map((t) => (
+        {abas.map((t) => (
           <button key={t.id} className={tab === t.id ? "on" : ""} onClick={() => ir(t.id)}>
             <Icon name={t.icon} size={21} />{t.nome}
             {t.id === "processos" && totalNV > 0 && <span className="badge dot-badge">{totalNV}</span>}
