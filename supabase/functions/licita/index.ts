@@ -2,19 +2,17 @@
 // LicitaPro · robô na nuvem (Supabase Edge Function "licita")
 //
 // Tarefas automáticas (chamadas pelo agendador do banco, com chave):
-//   ?tarefa=radar       → busca editais publicados no PNCP na UF configurada
 //   ?tarefa=acompanhar  → confere os processos cadastrados e registra movimentações
 // Ações do app (com login de alguém da equipe):
 //   { acao: "cadastrar", entrada }  → cadastra um processo a partir de um link/número
 //   { acao: "verificar", id }       → confere um processo agora
-//   { acao: "radar" }               → roda o radar agora
 //
 // Fontes: PNCP (dados públicos de todos os portais) e as páginas públicas do
 // Portal de Compras Públicas (chat da sessão, situação, itens e documentos).
+// O radar de editais fica na função "licita-radar" e a puxada com login, na "licita-sinc".
 // O Licitar Digital bloqueia acesso automático, então ele é acompanhado pelo PNCP.
 // =====================================================================
 import { createClient } from "npm:@supabase/supabase-js@2.49.4";
-import { Sessao, PCP_OP, lerSeusProcessos, urlSeusProcessos, caminhoPublico, type ProcPortal } from "./pcp.ts";
 
 const SB_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -73,10 +71,6 @@ const norm = (s: string) =>
 
 // Datas do PNCP vêm no horário de Brasília sem fuso.
 const brt = (s?: string | null) => (s ? (/[zZ]|[+-]\d\d:\d\d$/.test(s) ? s : `${s}-03:00`) : null);
-const ymd = (d: Date) => {
-  const b = new Date(d.getTime() - 3 * 3600e3);
-  return `${b.getUTCFullYear()}${String(b.getUTCMonth() + 1).padStart(2, "0")}${String(b.getUTCDate()).padStart(2, "0")}`;
-};
 const hash = (s: string) => {
   let h = 5381;
   for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
@@ -114,86 +108,6 @@ const pcpCodigoDe = (path?: string | null) => {
   return m ? Number(m[1]) : null;
 };
 
-// ---------- Configuração e palavras-chave ----------
-async function carregarConfig() {
-  const [{ data: cfg }, { data: pal }] = await Promise.all([
-    db.from("config").select("*").eq("id", 1).single(),
-    db.from("palavras").select("termo,tipo"),
-  ]);
-  const incluir = (pal || []).filter((p) => p.tipo === "incluir").map((p) => ({ termo: p.termo, n: norm(p.termo).trimEnd() }));
-  const excluir = (pal || []).filter((p) => p.tipo === "excluir").map((p) => ({ termo: p.termo, n: norm(p.termo).trimEnd() }));
-  return { cfg: cfg || { uf: "MG", modalidades: [6, 8], empresa_nome: "", empresa_cnpj: "" }, incluir, excluir };
-}
-
-function classificar(objeto: string, incluir: { termo: string; n: string }[], excluir: { termo: string; n: string }[]) {
-  const t = norm(objeto);
-  const achados = incluir.filter((p) => t.includes(p.n)).map((p) => p.termo);
-  const barrado = excluir.some((p) => t.includes(p.n));
-  return { termos: achados, relevante: achados.length > 0 && !barrado };
-}
-
-// ---------- RADAR ----------
-async function radar(deadline: number) {
-  const { cfg, incluir, excluir } = await carregarConfig();
-  const hoje = new Date();
-  const ontem = new Date(hoje.getTime() - 24 * 3600e3);
-  let lidos = 0, relevantes = 0, paginas = 0;
-  for (const mod of cfg.modalidades || [6, 8]) {
-    for (let pagina = 1; pagina <= 40; pagina++) {
-      if (Date.now() > deadline) return { lidos, relevantes, paginas, parcial: true };
-      let res: any;
-      try {
-        res = await pncpGet(
-          `/api/consulta/v1/contratacoes/publicacao?dataInicial=${ymd(ontem)}&dataFinal=${ymd(hoje)}&codigoModalidadeContratacao=${mod}&uf=${cfg.uf}&pagina=${pagina}&tamanhoPagina=50`,
-        );
-      } catch (e) {
-        if (e instanceof Limite) return { lidos, relevantes, paginas, parcial: true, aviso: "O PNCP pediu uma pausa; o restante entra na próxima rodada." };
-        throw e;
-      }
-      paginas++;
-      const lista = (res && res.data) || [];
-      if (!lista.length) break;
-      const linhas = lista.map((d: any) => {
-        const { termos, relevante } = classificar(`${d.objetoCompra || ""} ${d.informacaoComplementar || ""}`, incluir, excluir);
-        if (relevante) relevantes++;
-        return {
-          controle_pncp: d.numeroControlePNCP,
-          cnpj: d.orgaoEntidade?.cnpj,
-          ano: d.anoCompra,
-          seq: d.sequencialCompra,
-          orgao: d.orgaoEntidade?.razaoSocial,
-          unidade: d.unidadeOrgao?.nomeUnidade,
-          municipio: d.unidadeOrgao?.municipioNome,
-          uf: d.unidadeOrgao?.ufSigla,
-          modalidade_id: d.modalidadeId,
-          modalidade: d.modalidadeNome,
-          numero: d.numeroCompra,
-          processo_num: d.processo,
-          objeto: limpaObjeto(d.objetoCompra),
-          valor_estimado: d.valorTotalEstimado,
-          srp: d.srp,
-          abertura_propostas: brt(d.dataAberturaProposta),
-          encerramento_propostas: brt(d.dataEncerramentoProposta),
-          publicado_em: brt(d.dataPublicacaoPncp),
-          atualizado_pncp: d.dataAtualizacaoGlobal,
-          link_origem: d.linkSistemaOrigem,
-          sistema: d.usuarioNome,
-          portal: portalDe(d.linkSistemaOrigem, d.usuarioNome),
-          situacao: d.situacaoCompraNome,
-          termos,
-          relevante,
-          updated_at: new Date().toISOString(),
-        };
-      });
-      lidos += linhas.length;
-      const { error } = await db.from("editais").upsert(linhas, { onConflict: "controle_pncp" });
-      if (error) throw new Error(`Erro ao salvar editais: ${error.message}`);
-      if (pagina >= (res.totalPaginas || 1)) break;
-    }
-  }
-  return { lidos, relevantes, paginas };
-}
-
 // ---------- Movimentações ----------
 type Mov = {
   processo_id: string; fonte: string; tipo: string; titulo: string; detalhe?: string | null; link?: string | null;
@@ -221,13 +135,29 @@ function ehNosso(texto: string, empresa: string[]) {
 }
 
 // ---------- Etapa automática ----------
+// Etapas pela Lei 14.133 (art. 17) e pelas situações dos portais. Depois da vitória, "Ata / contrato"
+// e "Empenho / entrega" são marcadas pela equipe. O resultado (ganhamos, perdemos…) fica num campo à parte.
 const NOME_ETAPA: Record<string, string> = {
-  analise: "Em análise", participar: "Vamos participar", proposta: "Proposta enviada", disputa: "Em disputa",
-  habilitacao: "Habilitação / recurso", ganhamos: "Ganhamos", perdemos: "Perdemos", desistimos: "Desistimos", encerrado: "Cancelado / encerrado",
+  analise: "Em análise", participar: "Vamos participar", proposta: "Proposta enviada", suspenso: "Suspenso / em republicação",
+  disputa: "Disputa de lances", julgamento: "Julgamento / aceitação", habilitacao: "Habilitação", recurso: "Recurso",
+  homologacao: "Adjudicação / homologação", ata: "Ata / contrato assinado", execucao: "Empenho / entrega", concluido: "Concluído",
 };
-const ORDEM_ETAPA: Record<string, number> = { analise: 0, participar: 1, proposta: 2, disputa: 3, habilitacao: 4, perdemos: 5, encerrado: 5, ganhamos: 6, desistimos: 9 };
-// A etapa só anda para frente (e "Desistimos", marcado pela equipe, nunca é trocado).
-const podeAvancar = (de: string, para: string) => de !== "desistimos" && (ORDEM_ETAPA[para] ?? 0) > (ORDEM_ETAPA[de] ?? 0);
+const NOME_RESULTADO: Record<string, string> = {
+  ganhamos: "Ganhamos", ganhamos_parte: "Ganhamos parte dos itens", perdemos: "Perdemos", desistimos: "Desistimos", cancelado: "Cancelado / deserto / fracassado",
+};
+const ORDEM_ETAPA: Record<string, number> = {
+  analise: 0, participar: 1, proposta: 2, disputa: 3, julgamento: 4, habilitacao: 5, recurso: 6, homologacao: 7, ata: 8, execucao: 9, concluido: 10,
+};
+const POS_VITORIA = ["ata", "execucao", "concluido"];
+// A etapa só anda para frente. "Suspenso" pode vir de qualquer fase e, ao sair, volta para a fase em que estava.
+// Ata, execução e concluído não são mais mexidos pelo robô.
+function podeMudar(p: any, para: string) {
+  const de = p.etapa;
+  if (de === para || POS_VITORIA.includes(de)) return false;
+  if (para === "suspenso") return true;
+  if (de === "suspenso") return (ORDEM_ETAPA[para] ?? 0) >= (ORDEM_ETAPA[p.etapa_antes || "proposta"] ?? 0);
+  return (ORDEM_ETAPA[para] ?? 0) > (ORDEM_ETAPA[de] ?? 0);
+}
 
 // Situações oficiais do Portal de Compras Públicas (tabela do próprio site do portal).
 // Processo: Aguardando início de recebimento de propostas, Recebendo Propostas, Aguardando Início de Sessão,
@@ -239,7 +169,8 @@ const podeAvancar = (de: string, para: string) => de !== "desistimos" && (ORDEM_
 //   Finalizado, Cancelado (na Adjudicação/Homologação), Anulado, Revogado, Deserto, Fracassado, Recebendo Propostas, Em Republicação.
 const IT_SEM = /cancelad|anulad|revogad|desert|fracassad/i;
 const IT_FINAL = /adjudicad|homologad|empate lei 123 na (adjudica|homologa)|finalizad/i;
-const IT_HAB = /^encerrado|negocia|recebendo documentos|analis|an[aá]lise de doc|aceito|habilitad|fornecedor divulgado|empate lei 123 na habilita/i;
+const IT_JULG = /^encerrado|negocia|aceito|fornecedor divulgado/i; // julgamento/aceitação da proposta
+const IT_HAB = /recebendo documentos|analis|an[aá]lise de doc|habilitad|empate lei 123 na habilita/i; // habilitação
 const IT_LANCES = /^aberto$|desempate|^empate lei 123$|agendamento da lei 123|aguardando encerramento|tempo aleat|imin[eê]ncia de fechamento/i;
 const PR_SEM = /cancelad|revogad|anulad|fracassad|desert/i;
 const PR_FINAL = /encaminhado|adjudica|homolog|finalizad/i;
@@ -247,57 +178,73 @@ const PR_SUSP = /suspens|republica/i;
 const PR_SESSAO = /sess[aã]o p[uú]blica iniciada|em andamento/i;
 const PR_ANTES = /aguardando in[ií]cio|recebendo propostas|^aberto|publicad|divulgad/i;
 
-async function calcularEtapa(p: any, empresa: string[]): Promise<{ etapa: string; motivo: string } | null> {
-  const { data: itens } = await db.from("itens").select("numero,situacao,situacao_portal,nosso_arremata,nosso_vence,resultado_fornecedor").eq("processo_id", p.id);
+async function calcularEtapa(p: any, empresa: string[]): Promise<{ etapa: string | null; motivo: string; resultado: string | null; resultadoMotivo: string }> {
+  const { data: itens } = await db.from("itens").select("numero,situacao,situacao_portal,nosso_arremata,nosso_vence,resultado_fornecedor,vencedor_portal,participar").eq("processo_id", p.id);
   const lista: any[] = itens || [];
   const sitItem = (i: any) => String(i.situacao_portal || i.situacao || "").trim();
   const sit = String(p.situacao_portal || p.situacao_pncp || "").trim();
   const nums = (arr: any[]) => arr.map((i) => i.numero).sort((a, b) => a - b);
   const resumo = (n: number[]) => (n.length > 6 ? `${n.slice(0, 6).join(", ")} e mais ${n.length - 6}` : n.join(", "));
+  const out = { etapa: null as string | null, motivo: "", resultado: null as string | null, resultadoMotivo: "" };
 
-  // 1) Vencemos algum item (declarado vencedor no chat do portal ou resultado no PNCP)
+  // ---- Resultado ----
   const vencidos = nums(lista.filter((i) => i.nosso_vence || (i.resultado_fornecedor && ehNosso(i.resultado_fornecedor, empresa))));
-  if (vencidos.length) return { etapa: "ganhamos", motivo: `A empresa foi declarada vencedora do(s) item(ns) ${resumo(vencidos)}.` };
-
-  // 2) Processo cancelado, revogado, anulado, fracassado ou deserto
-  if (PR_SEM.test(sit)) return { etapa: "encerrado", motivo: `Processo ${sit.toLowerCase()} no portal.` };
+  const perdidos = nums(lista.filter((i) => (i.participar || i.nosso_arremata) && !i.nosso_vence &&
+    ((i.vencedor_portal && !ehNosso(i.vencedor_portal, empresa)) || (i.resultado_fornecedor && !ehNosso(i.resultado_fornecedor, empresa)))));
   const ativos = lista.filter((i) => !IT_SEM.test(sitItem(i)));
-  if (lista.length && !ativos.length) return { etapa: "encerrado", motivo: "Todos os itens foram cancelados, desertos ou fracassados." };
+  const cancelado = PR_SEM.test(sit) || (lista.length > 0 && !ativos.length);
+  const emFinal = ativos.filter((i) => IT_FINAL.test(sitItem(i)));
+  const final = PR_FINAL.test(sit) || (ativos.length > 0 && emFinal.length === ativos.length);
+  const participou = (ORDEM_ETAPA[p.etapa === "suspenso" ? (p.etapa_antes || "proposta") : p.etapa] ?? 0) >= 2;
+  if (vencidos.length) {
+    out.resultado = perdidos.length ? "ganhamos_parte" : "ganhamos";
+    out.resultadoMotivo = `A empresa foi declarada vencedora do(s) item(ns) ${resumo(vencidos)}${perdidos.length ? `; perdeu o(s) item(ns) ${resumo(perdidos)}` : ""}.`;
+  } else if (cancelado) {
+    out.resultado = "cancelado";
+    out.resultadoMotivo = PR_SEM.test(sit) ? `Processo ${sit.toLowerCase()} no portal.` : "Todos os itens foram cancelados, desertos ou fracassados.";
+  } else if (final && participou && (p.chat_historico_ok || !p.pcp_path)) {
+    // "Perdemos" só com o histórico do chat lido por inteiro (senão poderia faltar um "declarado vencedor").
+    out.resultado = "perdemos";
+    out.resultadoMotivo = `Processo ${sit ? sit.toLowerCase() : "concluído"} e a empresa não aparece como vencedora de nenhum item.`;
+  }
 
-  // 3) Suspenso ou em republicação: espera, sem mudar a etapa
-  if (PR_SUSP.test(sit)) return null;
+  // ---- Etapa ----
+  const fase = (etapa: string, motivo: string) => { out.etapa = etapa; out.motivo = motivo; return out; };
+  if (cancelado) return fase("concluido", out.resultadoMotivo);
+  if (PR_SUSP.test(sit)) return fase("suspenso", `Processo ${sit.toLowerCase()} no portal.`);
+  if (final) {
+    if (out.resultado === "perdemos") return fase("concluido", out.resultadoMotivo);
+    return fase("homologacao", `Processo ${sit ? sit.toLowerCase() : "na fase final"}${vencidos.length ? "" : "; aguardando o resultado dos itens"}.`);
+  }
 
   const emLances = ativos.filter((i) => IT_LANCES.test(sitItem(i)));
   const emHab = ativos.filter((i) => IT_HAB.test(sitItem(i)));
-  const emFinal = ativos.filter((i) => IT_FINAL.test(sitItem(i)));
+  const emJulg = ativos.filter((i) => IT_JULG.test(sitItem(i)));
   const arrematando = nums(lista.filter((i) => i.nosso_arremata));
-  const participou = (ORDEM_ETAPA[p.etapa] ?? 0) >= 2;
-
-  // 4) Encaminhado para adjudicação/homologação, adjudicado, homologado ou finalizado
-  if (PR_FINAL.test(sit) || (ativos.length > 0 && emFinal.length === ativos.length)) {
-    // "Perdemos" só com o histórico do chat lido por inteiro (senão poderia faltar um "declarado vencedor").
-    if (participou && (p.chat_historico_ok || !p.pcp_path)) return { etapa: "perdemos", motivo: `Processo ${sit ? sit.toLowerCase() : "concluído"} e a empresa não aparece como vencedora de nenhum item.` };
-    return { etapa: "habilitacao", motivo: `Processo ${sit ? sit.toLowerCase() : "na fase final"}; aguardando o resultado dos itens.` };
-  }
-
-  // 5) Sessão pública em andamento
   const sess = p.data_sessao ? Date.parse(p.data_sessao) : null;
   const sessaoPassou = !!sess && Date.now() > sess;
   if (PR_SESSAO.test(sit) || (sessaoPassou && !PR_ANTES.test(sit))) {
-    if (emLances.length) return { etapa: "disputa", motivo: `${emLances.length} item(ns) em disputa de lances${arrematando.length ? `; a empresa está arrematando o(s) item(ns) ${resumo(arrematando)}` : ""}.` };
-    if (emHab.length || emFinal.length) {
-      return { etapa: "habilitacao", motivo: arrematando.length ? `Lances encerrados; fase de aceitação/habilitação. A empresa arrematou o(s) item(ns) ${resumo(arrematando)}.` : "Lances encerrados; itens em aceitação, negociação ou análise de documentos." };
-    }
-    return { etapa: "disputa", motivo: PR_SESSAO.test(sit) ? "A sessão pública começou no portal." : "Passou a data da sessão." };
+    // Recurso: o chat da sala anuncia intenção de recurso, razões ou contrarrazões.
+    const { data: rec } = await db.from("movimentacoes").select("id").eq("processo_id", p.id).eq("tipo", "chat")
+      .gte("ocorrido_em", new Date(Date.now() - 20 * 864e5).toISOString())
+      .or("detalhe.ilike.%intenção de recurso%,detalhe.ilike.%intencao de recurso%,detalhe.ilike.%razões de recurso%,detalhe.ilike.%razões do recurso%,detalhe.ilike.%contrarraz%,detalhe.ilike.%prazo recursal%,detalhe.ilike.%fase recursal%")
+      .limit(1);
+    if (rec && rec.length && !emLances.length) return fase("recurso", "A sala abriu a fase de recurso (intenção, razões ou contrarrazões).");
+    if (emLances.length) return fase("disputa", `${emLances.length} item(ns) em disputa de lances${arrematando.length ? `; a empresa está arrematando o(s) item(ns) ${resumo(arrematando)}` : ""}.`);
+    if (emHab.length) return fase("habilitacao", `${emHab.length} item(ns) em análise de documentos de habilitação${arrematando.length ? `. A empresa arrematou o(s) item(ns) ${resumo(arrematando)}` : ""}.`);
+    if (emJulg.length || emFinal.length) return fase("julgamento", `Lances encerrados; itens em aceitação ou negociação${arrematando.length ? `. A empresa arrematou o(s) item(ns) ${resumo(arrematando)}` : ""}.`);
+    return fase("disputa", PR_SESSAO.test(sit) ? "A sessão pública começou no portal." : "Passou a data da sessão.");
   }
-  return null;
+  // Saiu da suspensão e ainda não abriu a sessão: volta para a fase em que estava.
+  if (p.etapa === "suspenso") return fase(p.etapa_antes || "proposta", "O processo voltou a andar no portal.");
+  return out;
 }
 
 function proxima(p: any): number {
   const agora = Date.now();
   const s = p.data_sessao ? Date.parse(p.data_sessao) : null;
   const sit = `${p.situacao_portal || ""} ${p.situacao_pncp || ""}`.toLowerCase();
-  const final = /finalizad|revogad|anulad|desert|fracassad|cancelad/.test(sit) || ["desistimos"].includes(p.etapa);
+  const final = /finalizad|revogad|anulad|desert|fracassad|cancelad/.test(sit) || ["concluido", "ata", "execucao"].includes(p.etapa);
   if (final) return 12 * 60;
   // Dia da disputa no Portal de Compras Públicas: chat e itens a cada 2 min (de 30 min antes até 12 h depois do início).
   if (p.pcp_path && s && s - agora < 30 * 60e3 && agora - s < 12 * 3600e3) return 2;
@@ -596,13 +543,21 @@ async function verificarProcesso(p: any, opts: { inicial?: boolean } = {}) {
     }
   }
 
-  // ---- Etapa automática ----
-  if (p.etapa_auto !== false) {
-    const nova = await calcularEtapa({ ...p, ...upd }, empresa);
-    if (nova && nova.etapa !== p.etapa && podeAvancar(p.etapa, nova.etapa)) {
-      upd.etapa = nova.etapa;
-      upd.etapa_motivo = nova.motivo;
-      add({ fonte: "sistema", tipo: "etapa", titulo: `Etapa: ${NOME_ETAPA[nova.etapa]} (automático)`, detalhe: nova.motivo, ocorrido_em: new Date().toISOString(), importante: !inicial && ["ganhamos", "perdemos", "habilitacao"].includes(nova.etapa), historico: false, chave: `etapa-${nova.etapa}` });
+  // ---- Etapa e resultado automáticos ----
+  if (p.etapa_auto !== false || p.resultado_auto !== false) {
+    const atual = { ...p, ...upd };
+    const calc = await calcularEtapa(atual, empresa);
+    if (p.etapa_auto !== false && calc.etapa && podeMudar(atual, calc.etapa)) {
+      if (calc.etapa === "suspenso") upd.etapa_antes = p.etapa;
+      upd.etapa = calc.etapa;
+      upd.etapa_motivo = calc.motivo;
+      const chave = calc.etapa === "suspenso" || p.etapa === "suspenso" ? `etapa-${calc.etapa}-${Date.now()}` : `etapa-${calc.etapa}`;
+      add({ fonte: "sistema", tipo: "etapa", titulo: `Etapa: ${NOME_ETAPA[calc.etapa]} (automático)`, detalhe: calc.motivo, ocorrido_em: new Date().toISOString(), importante: !inicial && ["suspenso", "recurso", "homologacao", "concluido"].includes(calc.etapa), historico: false, chave });
+    }
+    if (p.resultado_auto !== false && calc.resultado && calc.resultado !== p.resultado) {
+      upd.resultado = calc.resultado;
+      upd.resultado_motivo = calc.resultadoMotivo;
+      add({ fonte: "sistema", tipo: "etapa", titulo: `Resultado: ${NOME_RESULTADO[calc.resultado]} (automático)`, detalhe: calc.resultadoMotivo, ocorrido_em: new Date().toISOString(), importante: !inicial, historico: false, chave: `resultado-${calc.resultado}` });
     }
   }
 
@@ -662,100 +617,6 @@ async function acompanhar(deadline: number) {
     }
   }
   return { verificados: ok, erros, fila: (fila || []).length };
-}
-
-// ---------- SINCRONIZAR: puxa "Seus Processos" do portal com o login da empresa ----------
-const SIT_ENCERRADA = /cancelad|finalizad|revogad|anulad|desert|fracassad|suspens.*definitiv/i;
-const JANELA_DIAS = 60;
-
-async function sincronizarAcesso(a: any, deadline: number, quem: string) {
-  const resumo = { portal: a.portal, empresa_id: a.empresa_id, lidos: 0, novos: [] as any[], ja: 0, ignorados: 0, aviso: "" };
-  if (a.portal !== "pcp") throw new Error("Por enquanto o robô só entra sozinho no Portal de Compras Públicas.");
-  const { data: senha, error: eS } = await db.rpc("senha_acesso", { p_id: a.id });
-  if (eS || !senha) throw new Error("A senha desse acesso não está guardada. Cadastre de novo em Ajustes → Empresas.");
-
-  const s = new Sessao();
-  try {
-    await s.entrar(a.usuario, String(senha));
-    const corte = Date.now() - JANELA_DIAS * 864e5;
-    const lista: ProcPortal[] = [];
-    for (let pg = 1; pg <= 5; pg++) {
-      const { html, url } = await s.texto(urlSeusProcessos(pg));
-      if (!url.startsWith(PCP_OP)) throw new Error("O portal saiu da área do fornecedor ao abrir 'Seus Processos'.");
-      const linhas = lerSeusProcessos(html);
-      if (pg === 1 && !linhas.length && !/Seus Processos/i.test(html)) throw new Error("Não consegui ler 'Seus Processos' depois do login.");
-      lista.push(...linhas);
-      const ultima = linhas[linhas.length - 1];
-      if (linhas.length < 10 || !ultima || !ultima.abertura || Date.parse(ultima.abertura) < corte) break;
-    }
-    resumo.lidos = lista.length;
-
-    const candidatos = lista.filter((x) => !SIT_ENCERRADA.test(x.situacao) && (!x.abertura || Date.parse(x.abertura) >= corte));
-    resumo.ignorados = lista.length - candidatos.length;
-    const codigos = candidatos.map((x) => x.codigo);
-    const { data: existentes } = codigos.length ? await db.from("processos").select("pcp_codigo").in("pcp_codigo", codigos) : { data: [] };
-    const jaTem = new Set((existentes || []).map((r: any) => Number(r.pcp_codigo)));
-
-    for (const x of candidatos) {
-      if (jaTem.has(x.codigo)) { resumo.ja++; continue; }
-      if (Date.now() > deadline - 8000 || resumo.novos.length >= 25) { resumo.aviso = "Ficaram processos para a próxima rodada."; break; }
-      const dados = await s.texto(`${PCP_OP}/4/Pregoes/DadosPregao/?slA=Edit&ttCD_CHAVE=${x.codigo}`);
-      const caminho = caminhoPublico(dados.html);
-      const link = caminho ? `https://www.portaldecompraspublicas.com.br/processos/${caminho}` : null;
-      let edital: any = null;
-      if (caminho) {
-        const { data } = await db.from("editais").select("*").ilike("link_origem", `%${caminho}%`).limit(1);
-        edital = data && data[0];
-      }
-      const novo = {
-        edital_id: edital?.id || null,
-        controle_pncp: edital?.controle_pncp || null,
-        cnpj: edital?.cnpj || null, ano: edital?.ano || null, seq: edital?.seq || null,
-        pcp_path: caminho, pcp_codigo: x.codigo, portal: "pcp", link_origem: link,
-        orgao: edital?.orgao || x.orgao || null, municipio: edital?.municipio || null,
-        numero: (x.numero || "").split(" ")[0] || null, objeto: x.objeto || edital?.objeto || null,
-        modalidade: edital?.modalidade || null, valor_estimado: edital?.valor_estimado ?? null,
-        data_sessao: x.abertura, empresa_id: a.empresa_id, etapa: "proposta",
-        created_by: `robô · Seus Processos (${quem})`, proxima_verificacao: new Date().toISOString(),
-      };
-      const { data: criado, error } = await db.from("processos").insert(novo).select("id,orgao,numero,data_sessao").single();
-      if (error) {
-        if (/duplicate|unique/i.test(error.message)) { resumo.ja++; continue; }
-        throw new Error(`Erro ao cadastrar ${x.numero}: ${error.message}`);
-      }
-      if (edital) await db.from("editais").update({ status: "acompanhando" }).eq("id", edital.id);
-      await db.from("movimentacoes").insert({ processo_id: criado.id, fonte: "sistema", tipo: "cadastro", titulo: "Processo puxado automaticamente de “Seus Processos” no portal", detalhe: `Login ${a.usuario}`, autor: "robô", ocorrido_em: new Date().toISOString(), chave: "cadastro" });
-      resumo.novos.push(criado);
-    }
-  } finally {
-    await s.sair();
-  }
-  return resumo;
-}
-
-async function registrarSinc(id: string, ok: boolean, msg: string) {
-  await db.from("acessos").update({ sinc_em: new Date().toISOString(), sinc_ok: ok, sinc_msg: msg.slice(0, 300) }).eq("id", id);
-}
-
-async function sincronizar(filtro: { empresa_id?: string; portal?: string }, deadline: number, quem: string) {
-  let q = db.from("acessos").select("id,empresa_id,portal,usuario,senha_id").not("senha_id", "is", null).eq("portal", filtro.portal || "pcp");
-  if (filtro.empresa_id) q = q.eq("empresa_id", filtro.empresa_id);
-  const { data: acessos } = await q;
-  if (!acessos || !acessos.length) throw new Error("Não há login guardado para esse portal. Cadastre em Ajustes → Empresas e acessos.");
-  const resultados: any[] = [];
-  for (const a of acessos) {
-    if (Date.now() > deadline - 15000) break;
-    try {
-      const r = await sincronizarAcesso(a, deadline, quem);
-      await registrarSinc(a.id, true, `${r.novos.length} novo(s), ${r.ja} já acompanhado(s), ${r.ignorados} encerrado(s) ou antigo(s)`);
-      resultados.push(r);
-    } catch (e) {
-      const msg = String((e as Error).message || e);
-      await registrarSinc(a.id, false, msg);
-      resultados.push({ portal: a.portal, empresa_id: a.empresa_id, erro: msg });
-    }
-  }
-  return { resultados };
 }
 
 // ---------- CADASTRAR ----------
@@ -857,9 +718,7 @@ Deno.serve(async (req) => {
       const chave = req.headers.get("x-cron-key") || "";
       const { data: seg } = await db.from("segredos").select("valor").eq("chave", "cron").maybeSingle();
       if (!seg || chave !== seg.valor) return json({ erro: "não autorizado" }, 401);
-      if (tarefa === "radar") return json(await radar(deadline));
       if (tarefa === "acompanhar") return json(await acompanhar(deadline));
-      if (tarefa === "sincronizar") return json(await sincronizar({}, deadline, "automático"));
       if (tarefa === "cadastrar") {
         const body = await req.json().catch(() => ({}));
         return json(await cadastrar(String(body.entrada || ""), null));
@@ -880,20 +739,10 @@ Deno.serve(async (req) => {
       const emp = typeof body.empresa_id === "string" && /^[0-9a-f-]{36}$/i.test(body.empresa_id) ? body.empresa_id : null;
       return json(await cadastrar(String(body.entrada || ""), email, emp));
     }
-    if (body.acao === "sincronizar") {
-      if (membro.papel === "acompanha") return json({ erro: "Seu perfil só acompanha disputas." }, 403);
-      const emp = typeof body.empresa_id === "string" && /^[0-9a-f-]{36}$/i.test(body.empresa_id) ? body.empresa_id : undefined;
-      const portalSinc = typeof body.portal === "string" ? body.portal : "pcp";
-      return json(await sincronizar({ empresa_id: emp, portal: portalSinc }, deadline, email.split("@")[0]));
-    }
     if (body.acao === "verificar") {
       const { data: p } = await db.from("processos").select("*").eq("id", body.id).single();
       if (!p) return json({ erro: "Processo não encontrado." }, 404);
       return json(await verificarProcesso(p));
-    }
-    if (body.acao === "radar") {
-      if (membro.papel === "acompanha") return json({ erro: "Seu perfil não pode rodar o radar." }, 403);
-      return json(await radar(deadline));
     }
     return json({ erro: "Ação desconhecida." }, 400);
   } catch (e) {

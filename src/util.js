@@ -20,27 +20,44 @@ export const PORTAIS = {
 export const portal = (k) => PORTAIS[k] || PORTAIS.outro;
 
 export const ETAPAS = [
-  { id: "analise", nome: "Em análise", cor: "#64748B" },
-  { id: "participar", nome: "Vamos participar", cor: "#0E7490" },
-  { id: "proposta", nome: "Proposta enviada", cor: "#1D4ED8" },
-  { id: "disputa", nome: "Em disputa", cor: "#C2410C" },
-  { id: "habilitacao", nome: "Habilitação / recurso", cor: "#7C3AED" },
-  { id: "ganhamos", nome: "Ganhamos", cor: "#15803D" },
-  { id: "perdemos", nome: "Perdemos", cor: "#B91C1C" },
-  { id: "desistimos", nome: "Desistimos", cor: "#94A3B8" },
-  { id: "encerrado", nome: "Cancelado / encerrado", cor: "#78716C" },
+  // Antes da sessão
+  { id: "analise", nome: "Em análise", cor: "#64748B", grupo: "Antes da sessão" },
+  { id: "participar", nome: "Vamos participar", cor: "#0E7490", grupo: "Antes da sessão" },
+  { id: "proposta", nome: "Proposta enviada", cor: "#1D4ED8", grupo: "Antes da sessão" },
+  { id: "suspenso", nome: "Suspenso / em republicação", cor: "#B45309", grupo: "Antes da sessão" },
+  // Sessão pública (Lei 14.133, art. 17: lances, julgamento, habilitação, recurso, homologação)
+  { id: "disputa", nome: "Disputa de lances", cor: "#C2410C", grupo: "Sessão" },
+  { id: "julgamento", nome: "Julgamento / aceitação", cor: "#9333EA", grupo: "Sessão" },
+  { id: "habilitacao", nome: "Habilitação", cor: "#7C3AED", grupo: "Sessão" },
+  { id: "recurso", nome: "Recurso", cor: "#BE185D", grupo: "Sessão" },
+  { id: "homologacao", nome: "Adjudicação / homologação", cor: "#0F766E", grupo: "Sessão" },
+  // Depois da vitória (marcadas pela equipe)
+  { id: "ata", nome: "Ata / contrato assinado", cor: "#15803D", grupo: "Depois da vitória" },
+  { id: "execucao", nome: "Empenho / entrega", cor: "#166534", grupo: "Depois da vitória" },
+  { id: "concluido", nome: "Concluído", cor: "#78716C", grupo: "Fim" },
 ];
 export const etapa = (id) => ETAPAS.find((e) => e.id === id) || ETAPAS[0];
-export const ATIVAS = ["analise", "participar", "proposta", "disputa", "habilitacao"];
-// Categorias da aba Processos
+export const RESULTADOS = [
+  { id: "ganhamos", nome: "🏆 Ganhamos", cor: "#15803D" },
+  { id: "ganhamos_parte", nome: "🏆 Ganhamos parte", cor: "#15803D" },
+  { id: "perdemos", nome: "Perdemos", cor: "#B91C1C" },
+  { id: "desistimos", nome: "Desistimos", cor: "#94A3B8" },
+  { id: "cancelado", nome: "Cancelado / deserto / fracassado", cor: "#78716C" },
+];
+export const resultado = (id) => RESULTADOS.find((r) => r.id === id) || null;
+export const ganhou = (p) => p.resultado === "ganhamos" || p.resultado === "ganhamos_parte";
 export const A_LANCAR = ["analise", "participar"]; // ⭐ Vamos participar: proposta ainda não enviada
-export const ACOMPANHANDO = ["disputa", "habilitacao"]; // sessão já aberta, com proposta nossa
+export const ACOMPANHANDO = ["disputa", "julgamento", "habilitacao", "recurso", "homologacao"]; // sessão já aberta
+export const POS_VITORIA = ["ata", "execucao"];
+// Processos "vivos" (Início e Agenda)
+export const ATIVAS = ["analise", "participar", "proposta", "suspenso", ...ACOMPANHANDO];
+// Categorias da aba Processos (um processo pode aparecer em mais de uma: ex. ainda em habilitação e já com itens ganhos)
 export const CATEGORIAS = [
   { id: "vamos", nome: "⭐ Vamos participar", desc: "Proposta ainda a lançar", teste: (p) => A_LANCAR.includes(p.etapa) },
-  { id: "proposta", nome: "📨 Proposta enviada", desc: "Aguardando a abertura da sessão", teste: (p) => p.etapa === "proposta" },
-  { id: "acompanhando", nome: "👁 Acompanhando", desc: "Sessão aberta: disputa, habilitação e recursos", teste: (p) => ACOMPANHANDO.includes(p.etapa) },
-  { id: "ganhos", nome: "🏆 Ganhos", desc: "", teste: (p) => p.etapa === "ganhamos" },
-  { id: "perdidos", nome: "Perdidos / encerrados", desc: "", teste: (p) => ["perdemos", "desistimos", "encerrado"].includes(p.etapa) },
+  { id: "proposta", nome: "📨 Proposta enviada", desc: "Aguardando a abertura da sessão (ou suspenso antes dela)", teste: (p) => p.etapa === "proposta" || (p.etapa === "suspenso" && !ACOMPANHANDO.includes(p.etapa_antes)) },
+  { id: "acompanhando", nome: "👁 Acompanhando", desc: "Sessão aberta: lances, julgamento, habilitação, recurso e homologação", teste: (p) => ACOMPANHANDO.includes(p.etapa) || (p.etapa === "suspenso" && ACOMPANHANDO.includes(p.etapa_antes)) },
+  { id: "ganhos", nome: "🏆 Ganhos / contratos", desc: "Processos com itens vencidos: ata, contrato, empenho e entrega", teste: (p) => ganhou(p) || POS_VITORIA.includes(p.etapa) },
+  { id: "perdidos", nome: "Perdidos / encerrados", desc: "", teste: (p) => p.etapa === "concluido" && !ganhou(p) },
   { id: "todos", nome: "Todos", desc: "", teste: () => true },
 ];
 

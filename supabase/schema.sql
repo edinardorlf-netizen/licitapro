@@ -460,3 +460,12 @@ alter table public.itens add column if not exists nosso_vence boolean not null d
 -- regioes_uf(text[])                        — regiões e DDDs dos estados do radar
 -- limpar_descartados() + cron 'licita-limpar-descartados' (15 * * * *)
 -- cron 'licita-radar' → função licita-radar?tarefa=radar ; 'licita-radar-docs' (27,47) → ?tarefa=documentos
+
+-- ===================== 2026-11-04: etapas Lei 14.133 + pós-vitória, resultado, itens ganhos =====================
+-- (migração etapas_lei14133_resultado_itens_ganhos; resumo)
+-- processos.etapa: analise, participar, proposta, suspenso, disputa, julgamento, habilitacao, recurso,
+--                  homologacao, ata, execucao, concluido   (+ etapa_antes, para voltar da suspensão)
+-- processos.resultado: ganhamos, ganhamos_parte, perdemos, desistimos, cancelado (+ resultado_auto, resultado_motivo)
+-- itens_ganhos: itens vencidos (base do controle de atas/contratos: qtd, preço, marca, ata, contrato,
+--               vigência, empenhado, entregue). Trigger registrar_item_ganho em itens quando nosso_vence.
+-- A função "licita" ficou só com acompanhar/cadastrar/verificar (radar → licita-radar; login → licita-sinc).

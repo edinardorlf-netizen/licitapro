@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import {
-  sb, appUrl, portal, PORTAIS, ETAPAS, etapa, ATIVAS, A_LANCAR, ACOMPANHANDO, CATEGORIAS, PAPEIS, fmtData, fmtDataCurta, fmtHora, fmtDH, diaChave, hojeChave,
+  sb, appUrl, portal, PORTAIS, ETAPAS, etapa, ATIVAS, A_LANCAR, ACOMPANHANDO, CATEGORIAS, RESULTADOS, resultado, ganhou, PAPEIS, fmtData, fmtDataCurta, fmtHora, fmtDH, diaChave, hojeChave,
   diaLongo, falta, brl, num, parseNum, fmtIn, valorMinimo, errMsg, chamarRobo, iniciais,
 } from "./util.js";
 
@@ -163,6 +163,7 @@ textarea.input{height:auto;min-height:80px;padding:10px 11px;resize:vertical}
 .itab{width:100%;border-collapse:collapse;font-size:12.5px}
 .itab th,.itab td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line-2);vertical-align:top}
 .itab td.n{text-align:right;white-space:nowrap}
+.input.mini{padding:4px 6px;font-size:12.5px;width:86px;min-height:0}
 .pgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px}
 .pcard .ptop{display:flex;justify-content:space-between;gap:8px;align-items:flex-start}
 .pcard .porg{font-weight:700}
@@ -262,6 +263,7 @@ function ConfirmX({ label = "Excluir", confirmLabel = "Confirmar", onConfirm }) 
 
 const PortalTag = ({ k }) => <span className="tag"><i className="pdot" style={{ background: portal(k).cor }} />{portal(k).curto}</span>;
 const EtapaTag = ({ id }) => <span className="tag" style={{ background: `${etapa(id).cor}18`, color: etapa(id).cor }}>{etapa(id).nome}</span>;
+const ResultadoTag = ({ id }) => { const r = resultado(id); return r ? <span className="tag" style={{ background: `${r.cor}18`, color: r.cor }}>{r.nome}</span> : null; };
 
 const TABS = [
   { id: "inicio", nome: "Início", icon: "home" },
@@ -450,7 +452,7 @@ function Painel({ session, papel, notify }) {
 
   const carregar = useCallback(async () => {
     const [p, nv, eq, cf, em] = await Promise.all([
-      sb.from("processos").select("id,orgao,municipio,numero,objeto,portal,etapa,responsavel,data_sessao,prazo_impugnacao,prazo_esclarecimento,situacao_pncp,situacao_portal,link_origem,controle_pncp,erro,ultima_verificacao,created_at,valor_estimado,empresa_id,favorito,etapa_auto,etapa_motivo").order("data_sessao", { ascending: true, nullsFirst: false }),
+      sb.from("processos").select("id,orgao,municipio,numero,objeto,portal,etapa,responsavel,data_sessao,prazo_impugnacao,prazo_esclarecimento,situacao_pncp,situacao_portal,link_origem,controle_pncp,erro,ultima_verificacao,created_at,valor_estimado,empresa_id,favorito,etapa_auto,etapa_motivo,etapa_antes,resultado").order("data_sessao", { ascending: true, nullsFirst: false }),
       sb.rpc("nao_vistas"),
       sb.from("equipe").select("*").order("nome"),
       sb.from("config").select("*").eq("id", 1).single(),
@@ -912,6 +914,8 @@ function Processos({ ctx }) {
   const [filtro, setFiltro] = useState(() => { try { return sessionStorage.getItem("lp-cat") || ""; } catch (e) { return ""; } });
   const [emp, setEmp] = useState("todas");
   const [resumo, setResumo] = useState({});
+  const [verItens, setVerItens] = useState(false);
+  const [todosGanhos, setTodosGanhos] = useState(null);
   const [q, setQ] = useState("");
   const [novo, setNovo] = useState(false);
   const variasEmpresas = empresas.length > 1;
@@ -934,6 +938,9 @@ function Processos({ ctx }) {
     return (a.data_sessao || "9") < (b.data_sessao || "9") ? -1 : 1;
   });
   const naoLidosAqui = ordenada.filter((p) => naoVistas[p.id]).map((p) => p.id);
+  const carregarGanhos = () => sb.from("itens_ganhos").select("*, processos(orgao,numero,municipio,empresa_id)").order("created_at", { ascending: false }).limit(2000)
+    .then(({ data, error }) => { if (error) notify(errMsg(error)); setTodosGanhos((data || []).filter((g) => emp === "todas" || (g.processos && (emp === "sem" ? !g.processos.empresa_id : g.processos.empresa_id === emp)))); });
+  useEffect(() => { if (cat.id === "ganhos" && verItens) carregarGanhos(); }, [cat.id, verItens, emp, procs]);
   const marcarLida = async (ids, msg) => {
     const { error } = await sb.rpc("marcar_visto", { p_ids: ids });
     if (error) return notify(errMsg(error));
@@ -967,7 +974,14 @@ function Processos({ ctx }) {
           ))}
         </div>
       )}
-      {procs === null ? <div className="card empty">Carregando…</div> : !ordenada.length ? (
+      {cat.id === "ganhos" && (
+        <div className="seg" style={{ alignSelf: "flex-start" }}>
+          <button className={!verItens ? "on" : ""} onClick={() => setVerItens(false)}>Processos</button>
+          <button className={verItens ? "on" : ""} onClick={() => setVerItens(true)}>🏆 Itens ganhos (para atas e contratos)</button>
+        </div>
+      )}
+      {cat.id === "ganhos" && verItens ? (todosGanhos === null ? <div className="card empty">Carregando…</div> : <ItensGanhos lista={todosGanhos} pode={pode} notify={notify} onMudou={carregarGanhos} abrir={abrir} />)
+      : procs === null ? <div className="card empty">Carregando…</div> : !ordenada.length ? (
         <div className="card empty"><b>Nenhum processo em “{cat.nome}”</b>{cat.id === "vamos" ? "Marque ⭐ “Vamos participar” num edital do Radar ou cadastre pelo link." : pode ? "Clique em “Acompanhar processos” para puxar os processos do portal, ou use o Radar." : "Quando a equipe cadastrar processos, eles aparecem aqui."}</div>
       ) : (
         <div className="pgrid">
@@ -982,8 +996,8 @@ function Processos({ ctx }) {
                   {nv && <span className={`badge${Number(nv.importantes) ? "" : " soft"}`} title={`${nv.qtd} movimentação(ões) nova(s)`}>{nv.qtd}</span>}
                 </div>
                 <div className="hint clamp2" style={{ color: "var(--ink-2)" }}>{p.objeto}</div>
-                <div className="row-inline">{p.favorito && A_LANCAR.includes(p.etapa) && <span className="tag fav">⭐ Vamos participar</span>}<EtapaTag id={p.etapa} /><PortalTag k={p.portal} />{variasEmpresas && <span className="tag">{p.empresa_id ? nomeCurto(empDe(p.empresa_id)) : "Sem empresa"}</span>}</div>
-                {r && (acomp || p.etapa === "ganhamos") && (r.itens_nossos > 0 || r.pedidos_nossos > 0) && (
+                <div className="row-inline">{p.favorito && A_LANCAR.includes(p.etapa) && <span className="tag fav">⭐ Vamos participar</span>}<EtapaTag id={p.etapa} /><ResultadoTag id={p.resultado} /><PortalTag k={p.portal} />{variasEmpresas && <span className="tag">{p.empresa_id ? nomeCurto(empDe(p.empresa_id)) : "Sem empresa"}</span>}</div>
+                {r && (acomp || ganhou(p)) && (r.itens_nossos > 0 || r.pedidos_nossos > 0) && (
                   <div className="acomp">
                     <div className="row-inline" style={{ gap: 6 }}>
                       {r.itens_nossos > 0 && <span className="tag">{r.itens_nossos} item(ns) nosso(s)</span>}
@@ -1186,18 +1200,20 @@ function Processo({ id, ctx, onBack }) {
   const [nota, setNota] = useState("");
   const [vistoAntes, setVistoAntes] = useState(null);
   const [pedidos, setPedidos] = useState([]);
+  const [ganhos, setGanhos] = useState([]);
   const [soNossos, setSoNossos] = useState(true);
   const [err, setErr] = useState("");
 
   const carregar = useCallback(async () => {
-    const [a, b, c, d] = await Promise.all([
+    const [a, b, c, d, g] = await Promise.all([
       sb.from("processos").select("*").eq("id", id).maybeSingle(),
       sb.from("movimentacoes").select("*").eq("processo_id", id).order("ocorrido_em", { ascending: false }).limit(400),
       sb.from("itens").select("*").eq("processo_id", id).order("numero"),
       sb.rpc("pedidos_sala", { p_id: id, p_dias: 180 }),
+      sb.from("itens_ganhos").select("*").eq("processo_id", id).order("numero"),
     ]);
     if (a.error || !a.data) { setErr(a.error ? errMsg(a.error) : "Processo não encontrado."); return; }
-    setP(a.data); setMovs(b.data || []); setItens(c.data || []); setPedidos(d.data || []);
+    setP(a.data); setMovs(b.data || []); setItens(c.data || []); setPedidos(d.data || []); setGanhos(g.data || []);
     if (c.data && c.data.some((i) => i.participar)) setSoMeus((s) => s || false);
   }, [id]);
 
@@ -1236,6 +1252,19 @@ function Processo({ id, ctx, onBack }) {
     if (error) return notify(errMsg(error));
     setP((x) => ({ ...x, ...patch })); notify(msg);
   };
+  // Item ganho marcado à mão (quando o robô não pegou, ex.: Licitar Digital ou resultado fora do chat)
+  const marcarGanho = async (it, sim) => {
+    if (sim) {
+      const { error } = await sb.from("itens_ganhos").insert({ processo_id: id, item_id: it.id, empresa_id: p.empresa_id, numero: it.numero, descricao: it.descricao, unidade: it.unidade, quantidade: it.quantidade, valor_unitario: it.resultado_valor ?? (it.nosso_arremata ? it.arrematante_lance : null) ?? it.melhor_lance ?? null, marca: it.marca, origem: "manual" });
+      if (error) return notify(/duplicate/i.test(error.message) ? "Esse item já está nos itens ganhos" : errMsg(error));
+      notify(`🏆 Item ${it.numero} marcado como ganho`);
+    } else {
+      const { error } = await sb.from("itens_ganhos").delete().eq("processo_id", id).eq("numero", it.numero);
+      if (error) return notify(errMsg(error));
+      notify(`Item ${it.numero} retirado dos itens ganhos`);
+    }
+    carregar();
+  };
   const verificar = async () => {
     setVerificando(true);
     try { const r = await chamarRobo({ acao: "verificar", id }); notify(r.novas ? `${r.novas} movimentação(ões) registradas` : "Nada novo desde a última verificação"); await carregar(); }
@@ -1267,7 +1296,7 @@ function Processo({ id, ctx, onBack }) {
         <button className="back" onClick={onBack}><Icon name="left" size={18} />Processos</button>
         <div className="phead">
           <div className="row-inline">
-            <PortalTag k={p.portal} /><EtapaTag id={p.etapa} />{p.modalidade && <span className="tag">{p.modalidade}</span>}
+            <PortalTag k={p.portal} /><EtapaTag id={p.etapa} /><ResultadoTag id={p.resultado} />{p.modalidade && <span className="tag">{p.modalidade}</span>}
             {pode ? (
               <button type="button" className={`btn sm ${p.favorito ? "" : "ghost"}`} onClick={() => salvar(p.favorito ? { favorito: false } : { favorito: true, ...(p.etapa === "analise" ? { etapa: "participar" } : {}) }, p.favorito ? "Removido de “Vamos participar”" : "⭐ Marcado como “Vamos participar”")}>
                 {p.favorito ? "⭐ Vamos participar" : "☆ Marcar: vamos participar"}
@@ -1290,13 +1319,31 @@ function Processo({ id, ctx, onBack }) {
         </div>
         <div className="fgrid">
           <div className="field"><label htmlFor="pe-etapa">Etapa</label>
-            <select id="pe-etapa" className="input" value={p.etapa} disabled={!pode} onChange={(e) => salvar({ etapa: e.target.value, etapa_auto: false, etapa_motivo: null }, `Etapa: ${etapa(e.target.value).nome}. O robô não muda mais a etapa deste processo.`)}>
-              {ETAPAS.map((x) => <option key={x.id} value={x.id}>{x.nome}</option>)}
+            <select id="pe-etapa" className="input" value={p.etapa} disabled={!pode} onChange={(e) => {
+              const v = e.target.value;
+              // Ata, empenho e concluído são marcados pela equipe e o robô não mexe neles; nas outras, a equipe assume a etapa.
+              if (["ata", "execucao", "concluido"].includes(v)) salvar({ etapa: v, etapa_motivo: null }, `Etapa: ${etapa(v).nome}`);
+              else salvar({ etapa: v, etapa_auto: false, etapa_motivo: null }, `Etapa: ${etapa(v).nome}. O robô não muda mais a etapa deste processo.`);
+            }}>
+              {[...new Set(ETAPAS.map((x) => x.grupo))].map((g) => (
+                <optgroup key={g} label={g}>{ETAPAS.filter((x) => x.grupo === g).map((x) => <option key={x.id} value={x.id}>{x.nome}</option>)}</optgroup>
+              ))}
             </select>
             <span className="hint" style={{ marginTop: 4 }}>
-              {p.etapa_auto !== false
+              {["ata", "execucao", "concluido"].includes(p.etapa) ? <>✋ Marcada pela equipe.</>
+                : p.etapa_auto !== false
                 ? <>⚙ Automática{p.etapa_motivo ? `: ${p.etapa_motivo}` : " — muda sozinha conforme o andamento no portal."}</>
                 : <>✋ Definida pela equipe.{pode && <> <button type="button" className="linkbtn" style={{ fontSize: 12 }} onClick={() => salvar({ etapa_auto: true }, "Etapa automática ligada")}>Voltar a ser automática</button></>}</>}
+            </span></div>
+          <div className="field"><label htmlFor="pe-res">Resultado</label>
+            <select id="pe-res" className="input" value={p.resultado || ""} disabled={!pode} onChange={(e) => salvar({ resultado: e.target.value || null, resultado_auto: false, resultado_motivo: null }, e.target.value ? `Resultado: ${resultado(e.target.value).nome}` : "Resultado em aberto")}>
+              <option value="">Em aberto</option>
+              {RESULTADOS.map((x) => <option key={x.id} value={x.id}>{x.nome}</option>)}
+            </select>
+            <span className="hint" style={{ marginTop: 4 }}>
+              {p.resultado_auto !== false
+                ? <>⚙ Automático{p.resultado_motivo ? `: ${p.resultado_motivo}` : " — preenchido quando o portal ou o PNCP declarar o vencedor."}</>
+                : <>✋ Definido pela equipe.{pode && <> <button type="button" className="linkbtn" style={{ fontSize: 12 }} onClick={() => salvar({ resultado_auto: true }, "Resultado automático ligado")}>Voltar a ser automático</button></>}</>}
             </span></div>
           <div className="field"><label htmlFor="pe-resp">Responsável</label>
             <select id="pe-resp" className="input" value={p.responsavel || ""} disabled={!pode} onChange={(e) => salvar({ responsavel: e.target.value || null }, "Responsável atualizado")}>
@@ -1323,6 +1370,7 @@ function Processo({ id, ctx, onBack }) {
         <button role="tab" aria-selected={aba === "mov"} className={aba === "mov" ? "on" : ""} onClick={() => setAba("mov")}>Movimentações ({movs.filter((m) => !m.historico).length})</button>
         <button role="tab" aria-selected={aba === "pedidos"} className={aba === "pedidos" ? "on" : ""} onClick={() => setAba("pedidos")}>O que estão pedindo{pedidos.filter((x) => x.para_nos).length ? ` (${pedidos.filter((x) => x.para_nos).length} p/ nós)` : ""}</button>
         <button role="tab" aria-selected={aba === "itens"} className={aba === "itens" ? "on" : ""} onClick={() => setAba("itens")}>Itens ({itens.length}){meus.length ? ` · ${meus.length} nossos` : ""}</button>
+        <button role="tab" aria-selected={aba === "ganhos"} className={aba === "ganhos" ? "on" : ""} onClick={() => setAba("ganhos")}>🏆 Itens ganhos{ganhos.length ? ` (${ganhos.length})` : ""}</button>
       </div>
 
       {aba === "pedidos" && (
@@ -1414,12 +1462,14 @@ function Processo({ id, ctx, onBack }) {
           <p className="hint" style={{ marginBottom: 12 }}>Marque os itens que a empresa vai disputar e preencha custo, frete, impostos e margem. O app calcula o <b>valor mínimo</b> do lance e o robô avisa quando o resultado de cada um sair.</p>
           {!itens.length ? <div className="empty">Os itens aparecem aqui depois da primeira verificação.</div> : (
             <div className="stack" style={{ gap: 10 }}>
-              {(soMeus ? meus : itens).map((it) => <Item key={it.id} it={it} pode={pode} notify={notify} onSaved={(n) => setItens((l) => l.map((x) => (x.id === n.id ? n : x)))} />)}
+              {(soMeus ? meus : itens).map((it) => <Item key={it.id} it={it} pode={pode} notify={notify} ganho={ganhos.find((g) => g.numero === it.numero)} onGanho={marcarGanho} onSaved={(n) => setItens((l) => l.map((x) => (x.id === n.id ? n : x)))} />)}
               {soMeus && !meus.length && <div className="empty">Nenhum item marcado ainda.</div>}
             </div>
           )}
         </div>
       )}
+
+      {aba === "ganhos" && <ItensGanhos lista={ganhos} pode={pode} notify={notify} onMudou={carregar} unico />}
 
       {pode && (
         <div className="row-inline" style={{ justifyContent: "flex-end" }}>
@@ -1430,7 +1480,85 @@ function Processo({ id, ctx, onBack }) {
   );
 }
 
-function Item({ it, pode, notify, onSaved }) {
+/* Itens que vencemos: base do controle de atas e contratos.
+   unico = dentro de um processo (mostra o formulário de ata/contrato para todos os itens). */
+function ItensGanhos({ lista, pode, notify, onMudou, unico, abrir }) {
+  const [f, setF] = useState({ ata_numero: "", contrato_numero: "", vigencia_inicio: "", vigencia_fim: "" });
+  const [busy, setBusy] = useState(false);
+  const [q, setQ] = useState("");
+  useEffect(() => {
+    if (!unico || !lista.length) return;
+    const g = lista[0];
+    setF({ ata_numero: g.ata_numero || "", contrato_numero: g.contrato_numero || "", vigencia_inicio: g.vigencia_inicio || "", vigencia_fim: g.vigencia_fim || "" });
+  }, [unico, lista.length && lista[0].id]);
+  const total = lista.reduce((a, g) => a + (Number(g.quantidade) || 0) * (Number(g.valor_unitario) || 0), 0);
+  const salvarCampo = async (g, campo, valor) => {
+    const v = ["quantidade", "valor_unitario"].includes(campo) ? parseNum(valor) : (String(valor).trim() || null);
+    if (v === g[campo] || (v == null && g[campo] == null)) return;
+    const { error } = await sb.from("itens_ganhos").update({ [campo]: v }).eq("id", g.id);
+    if (error) return notify(errMsg(error));
+    onMudou && onMudou();
+  };
+  const aplicarAta = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    const patch = { ata_numero: f.ata_numero.trim() || null, contrato_numero: f.contrato_numero.trim() || null, vigencia_inicio: f.vigencia_inicio || null, vigencia_fim: f.vigencia_fim || null };
+    const { error } = await sb.from("itens_ganhos").update(patch).in("id", lista.map((g) => g.id));
+    setBusy(false);
+    if (error) return notify(errMsg(error));
+    notify("Ata / contrato salvo em todos os itens ganhos"); onMudou && onMudou();
+  };
+  const filtrada = lista.filter((g) => !q || `${g.numero} ${g.descricao} ${g.marca || ""} ${g.ata_numero || ""} ${g.contrato_numero || ""} ${g.processos ? g.processos.orgao : ""}`.toLowerCase().includes(q.toLowerCase()));
+  const vig = (g) => (g.vigencia_inicio || g.vigencia_fim ? `${g.vigencia_inicio ? fmtData(g.vigencia_inicio + "T12:00:00") : "?"} a ${g.vigencia_fim ? fmtData(g.vigencia_fim + "T12:00:00") : "?"}` : "—");
+
+  return (
+    <div className="card stack" style={{ gap: 12 }}>
+      <div className="card-h" style={{ marginBottom: 0 }}>
+        <h2>🏆 Itens ganhos ({lista.length})</h2>
+        <div className="row-inline"><span className="hint">Total: <b>{brl(total)}</b></span>
+          {lista.length > 8 && <input className="input" style={{ maxWidth: 220 }} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Filtrar" aria-label="Filtrar itens ganhos" />}
+        </div>
+      </div>
+      <p className="hint" style={{ margin: 0 }}>Itens declarados vencedores para a empresa (pelo chat do portal ou pelo resultado no PNCP), mais os marcados à mão em “Itens”. Esta lista é a base para o controle das atas e contratos: quantidade, preço, marca, vigência, empenhos e entregas.</p>
+      {unico && pode && lista.length > 0 && (
+        <form className="fgrid" onSubmit={aplicarAta} noValidate>
+          <div className="field"><label htmlFor="ig-ata">Nº da ata</label><input id="ig-ata" className="input" value={f.ata_numero} onChange={(e) => setF({ ...f, ata_numero: e.target.value })} placeholder="Ex.: 045/2026" /></div>
+          <div className="field"><label htmlFor="ig-ctr">Nº do contrato</label><input id="ig-ctr" className="input" value={f.contrato_numero} onChange={(e) => setF({ ...f, contrato_numero: e.target.value })} placeholder="Se houver" /></div>
+          <div className="field"><label htmlFor="ig-vi">Vigência: início</label><input id="ig-vi" type="date" className="input" value={f.vigencia_inicio} onChange={(e) => setF({ ...f, vigencia_inicio: e.target.value })} /></div>
+          <div className="field"><label htmlFor="ig-vf">Vigência: fim</label><input id="ig-vf" type="date" className="input" value={f.vigencia_fim} onChange={(e) => setF({ ...f, vigencia_fim: e.target.value })} /></div>
+          <div className="field" style={{ justifyContent: "flex-end" }}><button className="btn" disabled={busy}>{busy ? <span className="spin" /> : null}Salvar para todos os itens</button></div>
+        </form>
+      )}
+      {!lista.length ? <div className="empty">{unico ? "Nenhum item ganho ainda. Quando o pregoeiro declarar a empresa vencedora de um item, ele aparece aqui sozinho; também dá para marcar em “Itens” → “🏆 Ganhamos este item”." : "Nenhum item ganho ainda."}</div> : (
+        <div style={{ overflowX: "auto" }}>
+          <table className="itab">
+            <thead><tr>
+              {!unico && <th>Processo</th>}
+              <th>Item</th><th>Descrição</th><th className="n">Qtd</th><th className="n">Valor unit.</th><th className="n">Total</th><th>Marca</th><th>Ata / contrato</th><th>Vigência</th>
+            </tr></thead>
+            <tbody>
+              {filtrada.map((g) => (
+                <tr key={g.id}>
+                  {!unico && <td>{g.processos ? <button type="button" className="linkbtn" style={{ fontSize: 12.5, textAlign: "left" }} onClick={() => abrir && abrir(g.processo_id)}>{g.processos.orgao}{g.processos.numero ? ` · ${g.processos.numero}` : ""}</button> : "—"}</td>}
+                  <td>{g.numero}{g.origem === "manual" ? <div className="hint">manual</div> : null}</td>
+                  <td style={{ minWidth: 220 }}><div className="clamp3">{g.descricao}</div></td>
+                  <td className="n">{pode ? <input className="input num mini" defaultValue={fmtIn(g.quantidade)} onBlur={(e) => salvarCampo(g, "quantidade", e.target.value)} aria-label={`Quantidade do item ${g.numero}`} /> : num(g.quantidade)} <span className="hint">{g.unidade || ""}</span></td>
+                  <td className="n">{pode ? <input className="input num mini" defaultValue={fmtIn(g.valor_unitario)} onBlur={(e) => salvarCampo(g, "valor_unitario", e.target.value)} aria-label={`Valor unitário do item ${g.numero}`} /> : brl(g.valor_unitario)}</td>
+                  <td className="n">{brl((Number(g.quantidade) || 0) * (Number(g.valor_unitario) || 0))}</td>
+                  <td>{pode ? <input className="input mini" style={{ width: 110 }} defaultValue={g.marca || ""} onBlur={(e) => salvarCampo(g, "marca", e.target.value)} aria-label={`Marca do item ${g.numero}`} /> : g.marca || "—"}</td>
+                  <td>{[g.ata_numero && `Ata ${g.ata_numero}`, g.contrato_numero && `Contrato ${g.contrato_numero}`].filter(Boolean).join(" · ") || "—"}</td>
+                  <td>{vig(g)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Item({ it, pode, notify, onSaved, ganho, onGanho }) {
   const [aberto, setAberto] = useState(false);
   const [f, setF] = useState({ custo: fmtIn(it.custo), frete: fmtIn(it.frete), impostos_pct: fmtIn(it.impostos_pct), margem_pct: fmtIn(it.margem_pct), marca: it.marca || "" });
   const [busy, setBusy] = useState(false);
@@ -1460,6 +1588,14 @@ function Item({ it, pode, notify, onSaved }) {
         {pode ? <label className="toggle"><input type="checkbox" checked={it.participar} onChange={(e) => marcar(e.target.checked)} />Vamos disputar</label>
           : it.participar && <span className="tag">Vamos disputar</span>}
       </div>
+      {(ganho || (pode && (it.participar || it.nosso_arremata || it.nosso_vence))) && (
+        <div className="row-inline" style={{ gap: 8 }}>
+          {ganho ? <span className="tag ok">🏆 Item ganho{ganho.valor_unitario != null ? ` · ${brl(ganho.valor_unitario)}` : ""}</span> : null}
+          {pode && onGanho && (ganho
+            ? (ganho.origem === "manual" && <button type="button" className="linkbtn" style={{ fontSize: 12.5 }} onClick={() => onGanho(it, false)}>Desfazer</button>)
+            : <button type="button" className="btn ghost sm" onClick={() => onGanho(it, true)}>🏆 Ganhamos este item</button>)}
+        </div>
+      )}
       <div className="item-meta">
         <span>Qtd: <b>{num(it.quantidade)} {it.unidade || ""}</b></span>
         {it.valor_ref != null && Number(it.valor_ref) > 0 && <span>Ref. unitária: <b>{brl(it.valor_ref)}</b></span>}
