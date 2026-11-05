@@ -1,4 +1,4 @@
-# LicitaPro
+# LicitaPro · um sistema Auraxis
 
 App interno da equipe para acompanhar licitações em Minas Gerais.
 

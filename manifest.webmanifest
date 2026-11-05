@@ -1,7 +1,7 @@
 {
   "name": "LicitaPro",
   "short_name": "LicitaPro",
-  "description": "Radar de editais, processos e disputas da equipe.",
+  "description": "LicitaPro, um sistema Auraxis: radar de editais, processos e disputas da equipe.",
   "lang": "pt-BR",
   "start_url": "./",
   "scope": "./",

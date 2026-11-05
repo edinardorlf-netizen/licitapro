@@ -6,7 +6,7 @@ import {
 } from "./util.js";
 
 /* ============================================================
-   LicitaPro · app da equipe
+   LicitaPro · um sistema Auraxis · app da equipe
    ============================================================ */
 
 const css = `
@@ -30,6 +30,10 @@ button{cursor:pointer}
 .side{position:fixed;inset:0 auto 0 0;width:232px;background:var(--surface);border-right:1px solid var(--line);
   padding:calc(22px + env(safe-area-inset-top,0px)) 14px calc(18px + env(safe-area-inset-bottom,0px)) calc(14px + env(safe-area-inset-left,0px));display:flex;flex-direction:column;gap:24px;z-index:20}
 .brand{display:flex;align-items:center;gap:10px;padding:0 8px;font-weight:800;font-size:16.5px;letter-spacing:-.02em}
+.brand-txt{display:flex;flex-direction:column;line-height:1.1}
+.brand-txt small{font-size:10.5px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.por-marca{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin-top:-4px}
+.por-marca b{color:var(--ink-2)}
 .brand-mark{width:32px;height:32px;border-radius:10px;background:var(--accent);display:grid;place-items:center;color:#fff}
 .nav{display:flex;flex-direction:column;gap:3px}
 .nav button{display:flex;align-items:center;gap:12px;border:0;background:transparent;padding:10px 12px;border-radius:10px;color:var(--ink-2);font-weight:500;text-align:left}
@@ -353,6 +357,7 @@ function Auth() {
       <div className="auth-hero">
         <span className="brand-mark" style={{ width: 48, height: 48, borderRadius: 14 }}><Icon name="radar" size={26} /></span>
         <h1>LicitaPro</h1>
+        <div className="por-marca">um sistema <b>Auraxis</b></div>
         <p>Editais, processos e disputas da equipe num lugar só.</p>
       </div>
       <form className="card form" onSubmit={go} noValidate>
@@ -515,7 +520,7 @@ function Painel({ session, papel, notify }) {
   return (
     <>
       <aside className="side">
-        <div className="brand"><span className="brand-mark"><Icon name="radar" size={18} /></span>LicitaPro</div>
+        <div className="brand"><span className="brand-mark"><Icon name="radar" size={18} /></span><span className="brand-txt">LicitaPro<small>por Auraxis</small></span></div>
         <nav className="nav" aria-label="Seções">
           {abas.map((t) => (
             <button key={t.id} className={tab === t.id ? "on" : ""} onClick={() => ir(t.id)} aria-current={tab === t.id ? "page" : undefined}>
