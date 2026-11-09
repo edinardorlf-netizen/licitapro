@@ -4,7 +4,8 @@
 // Tarefas automáticas (chamadas pelo agendador do banco, com chave):
 //   ?tarefa=acompanhar  → confere os processos cadastrados e registra movimentações
 // Ações do app (com login de alguém da equipe):
-//   { acao: "cadastrar", entrada }  → cadastra um processo a partir de um link/número
+//   { acao: "cadastrar", entrada, portal?, data? } → cadastra um processo a partir de um link, do
+//                                    número de controle do PNCP ou do ID do processo no portal
 //   { acao: "verificar", id }       → confere um processo agora
 //
 // Fontes: PNCP (dados públicos de todos os portais) e as páginas públicas do
@@ -619,14 +620,136 @@ async function acompanhar(deadline: number) {
   return { verificados: ok, erros, fila: (fila || []).length };
 }
 
+// ---------- BUSCA PELO ID DO PORTAL ----------
+// Cada portal tem o seu número do processo (ex.: Licitar Digital "ID 117160", Portal de Compras
+// Públicas "…-345678"). O PNCP guarda o link original de cada processo (linkSistemaOrigem), onde
+// esse número aparece. Então procuramos nas publicações do PNCP dos estados do radar até achar.
+// Os IDs do mesmo portal crescem com o tempo: usamos os que já conhecemos para estimar o dia
+// e, a cada dia lido, vemos se o ID procurado é mais novo ou mais velho para andar na direção certa.
+const ID_NO_LINK: Record<string, RegExp> = {
+  licitar: /\/pesquisa\/(\d+)/i,
+  pcp: /portaldecompraspublicas\.com\.br\/processos\/[^?#]*-(\d+)\/?(?:[?#]|$)/i,
+  "licitacoes-e": /(?:numeroLicitacao|licitacao)[=/](\d+)/i,
+  comprasgov: /compra=(\d+)/i,
+  licitanet: /licitanet\.com\.br\/sessao\/(\d+)/i,
+};
+const contemId = (link: string | null | undefined, id: string) => new RegExp(`(^|\\D)${id}(\\D|$)`).test(link || "");
+const diaBR = (d: Date) => { const b = new Date(d.getTime() - 3 * 3600e3); return `${b.getUTCFullYear()}${String(b.getUTCMonth() + 1).padStart(2, "0")}${String(b.getUTCDate()).padStart(2, "0")}`; };
+const fmtDia = (d: Date) => { const b = new Date(d.getTime() - 3 * 3600e3); return `${String(b.getUTCDate()).padStart(2, "0")}/${String(b.getUTCMonth() + 1).padStart(2, "0")}`; };
+
+// Mediana e quartis: processos antigos que são alterados voltam ao PNCP com data nova (IDs "fora da curva"),
+// então olhamos o meio da distribuição de cada dia, não os extremos.
+const quantil = (arr: number[], q: number) => { const a = [...arr].sort((x, y) => x - y); return a[Math.min(a.length - 1, Math.max(0, Math.floor(q * (a.length - 1))))]; };
+
+async function estimarDia(portalK: string, id: number): Promise<Date | null> {
+  const rx = ID_NO_LINK[portalK];
+  if (!rx || portalK === "comprasgov") return null; // no Compras.gov o número junta UASG + compra: não cresce com o tempo
+  const { data } = await db.from("editais").select("link_origem,publicado_em").not("link_origem", "is", null).not("publicado_em", "is", null).order("publicado_em", { ascending: false }).limit(5000);
+  const porDia = new Map<string, number[]>();
+  for (const e of data || []) {
+    const m = (e.link_origem || "").match(rx);
+    if (!m) continue;
+    const k = diaBR(new Date(e.publicado_em));
+    if (!porDia.has(k)) porDia.set(k, []);
+    porDia.get(k)!.push(Number(m[1]));
+  }
+  const dias = [...porDia.entries()].filter(([, v]) => v.length >= 3).map(([k, v]) => ({ t: Date.parse(`${k.slice(0, 4)}-${k.slice(4, 6)}-${k.slice(6, 8)}T12:00:00-03:00`), med: quantil(v, 0.5) })).sort((a, b) => a.t - b.t);
+  if (dias.length < 2) return null;
+  // Ritmo de IDs por dia (do primeiro ao último dia conhecido)
+  const ritmo = Math.max(1, (dias[dias.length - 1].med - dias[0].med) / ((dias[dias.length - 1].t - dias[0].t) / 864e5));
+  if (id <= dias[0].med) return new Date(dias[0].t - ((dias[0].med - id) / ritmo) * 864e5);
+  if (id >= dias[dias.length - 1].med) return new Date(Math.min(Date.now(), dias[dias.length - 1].t + ((id - dias[dias.length - 1].med) / ritmo) * 864e5));
+  for (let i = 1; i < dias.length; i++) {
+    if (dias[i].med >= id) {
+      const a = dias[i - 1], b = dias[i];
+      return new Date(a.t + ((id - a.med) / Math.max(1, b.med - a.med)) * (b.t - a.t));
+    }
+  }
+  return null;
+}
+
+async function buscarPorId(idTxt: string, portalK: string, dataDica: string | null) {
+  const id = idTxt.replace(/\D/g, "");
+  if (id.length < 4) throw new Error("Esse ID parece curto demais. Confira o número do processo no portal.");
+  // 1) Já está no radar?
+  const { data: noRadar } = await db.from("editais").select("*").ilike("link_origem", `%${id}%`).limit(20);
+  const ed = (noRadar || []).find((e) => contemId(e.link_origem, id) && (portalK === "outro" || portalDe(e.link_origem, e.sistema) === portalK));
+  if (ed) return { cnpj: ed.cnpj as string, ano: ed.ano as number, seq: ed.seq as number, onde: "radar" };
+
+  // 2) Procura no PNCP, dia a dia
+  const { data: cfg } = await db.from("config").select("ufs,uf").eq("id", 1).maybeSingle();
+  const ufs: string[] = (cfg?.ufs && cfg.ufs.length ? cfg.ufs : [cfg?.uf || "MG"]);
+  const rx = ID_NO_LINK[portalK];
+  const dica = dataDica && /^\d{4}-\d{2}-\d{2}$/.test(dataDica) ? new Date(`${dataDica}T12:00:00-03:00`) : null;
+  const est = dica || await estimarDia(portalK, Number(id));
+  const guiado = !!est && !dica && !!rx;
+  let dia = est || new Date();
+  const lidos = new Set<string>();
+  const deadline = Math.min(limiteExec - 8000, Date.now() + 95_000);
+  const linha: string[] = [];
+  let dirAnt = -1;
+
+  // deno-lint-ignore no-explicit-any
+  const lerDia = async (d: Date, mods: number[]): Promise<{ achou: any; ids: number[]; completo: boolean }> => {
+    const ids: number[] = [];
+    for (const uf of ufs) for (const mod of mods) {
+      for (let pag = 1; pag <= 30; pag++) {
+        if (Date.now() > deadline) return { achou: null, ids, completo: false };
+        const r = await pncpGet(`/api/consulta/v1/contratacoes/publicacao?dataInicial=${diaBR(d)}&dataFinal=${diaBR(d)}&codigoModalidadeContratacao=${mod}&uf=${uf}&pagina=${pag}&tamanhoPagina=50`);
+        // deno-lint-ignore no-explicit-any
+        const lst: any[] = (r && r.data) || [];
+        for (const c of lst) {
+          const link = c.linkSistemaOrigem || "";
+          if (contemId(link, id) && (portalK === "outro" || portalDe(link, c.usuarioNome) === portalK)) return { achou: c, ids, completo: true };
+          const m = rx ? link.match(rx) : null;
+          if (m) ids.push(Number(m[1]));
+        }
+        if (!r || pag >= (r.totalPaginas || 1)) break;
+      }
+    }
+    return { achou: null, ids, completo: true };
+  };
+
+  for (let passo = 0; passo < 12 && Date.now() < deadline; passo++) {
+    if (dia.getTime() > Date.now() + 3600e3) dia = new Date();
+    const chave = diaBR(dia);
+    if (lidos.has(chave)) break;
+    lidos.add(chave);
+    const r6 = await lerDia(dia, [6]);
+    if (r6.achou) return { cnpj: r6.achou.orgaoEntidade.cnpj, ano: r6.achou.anoCompra, seq: r6.achou.sequencialCompra, onde: `PNCP (${fmtDia(dia)})` };
+    linha.push(fmtDia(dia));
+    if (!r6.completo) break;
+    // Faixa "normal" de IDs do dia (sem os processos antigos republicados)
+    const max = r6.ids.length >= 3 ? quantil(r6.ids, 0.8) : r6.ids.length ? Math.max(...r6.ids) : null;
+    const min = r6.ids.length >= 3 ? quantil(r6.ids, 0.2) : r6.ids.length ? Math.min(...r6.ids) : null;
+    let dir = r6.ids.length ? -1 : dirAnt; // sem pista: volta no tempo; dia sem publicação (fim de semana): segue na mesma direção
+    if (guiado && max != null && min != null) {
+      if (Number(id) > max) dir = 1;
+      else if (Number(id) < min) dir = -1;
+      else {
+        // O ID cai dentro do dia: pode ser dispensa ou concorrência, ou ter sido publicado um pouco depois
+        const r2 = await lerDia(dia, [8, 4]);
+        if (r2.achou) return { cnpj: r2.achou.orgaoEntidade.cnpj, ano: r2.achou.anoCompra, seq: r2.achou.sequencialCompra, onde: `PNCP (${fmtDia(dia)})` };
+        dir = 1;
+      }
+    }
+    dirAnt = dir;
+    dia = new Date(dia.getTime() + dir * 864e5);
+  }
+  throw new Error(
+    `Não encontrei o ID ${id} no PNCP${linha.length ? ` (procurei nos pregões publicados em ${linha.join(", ")})` : ""}. ` +
+    `Informe a data de publicação do processo (aparece na página dele no portal) para eu procurar no dia certo, ou cole o link do PNCP.`,
+  );
+}
+
 // ---------- CADASTRAR ----------
-async function cadastrar(entrada: string, email: string | null, empresaId: string | null = null) {
+async function cadastrar(entrada: string, email: string | null, empresaId: string | null = null, portalK: string | null = null, dataDica: string | null = null) {
   if (!empresaId) {
     const { data: ativas } = await db.from("empresas").select("id").eq("ativa", true).limit(2);
     if (ativas && ativas.length === 1) empresaId = ativas[0].id;
   }
   const txt = (entrada || "").trim();
-  if (!txt) throw new Error("Cole o link do processo ou o número de controle do PNCP.");
+  if (!txt) throw new Error("Cole o link do processo, o ID dele no portal ou o número de controle do PNCP.");
   let cnpj: string | null = null, ano: number | null = null, seq: number | null = null;
   let pcpPath: string | null = null;
   let edital: any = null;
@@ -635,17 +758,18 @@ async function cadastrar(entrada: string, email: string | null, empresaId: strin
   const mCtrl = txt.match(/(\d{14})-\d-(\d{1,7})\/(\d{4})/);
   const mLic = txt.match(/(?:licitardigital|ammlicita)[^\s]*\/pesquisa\/(\d+)/i);
   pcpPath = pcpPathDe(txt);
+  // Só o número (ID do processo no portal), ex.: "117160" ou "ID: 117160"
+  const mId = !mApp && !mCtrl && !pcpPath && !mLic ? txt.replace(/[\s.\-\/]/g, "").match(/^(?:id[:#]?)?(\d{4,20})$/i) : null;
   if (mApp) { cnpj = mApp[1]; ano = Number(mApp[2]); seq = Number(mApp[3]); }
   else if (mCtrl) { cnpj = mCtrl[1]; seq = Number(mCtrl[2]); ano = Number(mCtrl[3]); }
   else if (pcpPath) {
     const { data } = await db.from("editais").select("*").ilike("link_origem", `%${pcpPath}%`).limit(1);
     edital = data && data[0];
-  } else if (mLic) {
-    const { data } = await db.from("editais").select("*").like("link_origem", `%/pesquisa/${mLic[1]}`).limit(1);
-    edital = data && data[0];
-    if (!edital) throw new Error("Não encontrei esse processo do Licitar Digital no radar. Cole o link dele no PNCP (pncp.gov.br/app/editais/…), que aparece na página do processo no portal.");
+  } else if (mLic || mId) {
+    const r = await buscarPorId(mLic ? mLic[1] : mId![1], mLic ? "licitar" : (portalK || "outro"), dataDica);
+    cnpj = r.cnpj; ano = r.ano; seq = r.seq;
   } else {
-    throw new Error("Não reconheci esse link. Use o link do PNCP, o número de controle do PNCP (ex.: 18192898000102-1-000167/2026) ou o link do Portal de Compras Públicas.");
+    throw new Error("Não reconheci esse link. Use o ID do processo no portal, o link do PNCP, o número de controle do PNCP (ex.: 18192898000102-1-000167/2026) ou o link do Portal de Compras Públicas.");
   }
   if (edital) { cnpj = edital.cnpj; ano = edital.ano; seq = edital.seq; }
   if (cnpj && !edital) {
@@ -721,7 +845,7 @@ Deno.serve(async (req) => {
       if (tarefa === "acompanhar") return json(await acompanhar(deadline));
       if (tarefa === "cadastrar") {
         const body = await req.json().catch(() => ({}));
-        return json(await cadastrar(String(body.entrada || ""), null));
+        return json(await cadastrar(String(body.entrada || ""), null, null, typeof body.portal === "string" ? body.portal : null, typeof body.data === "string" ? body.data : null));
       }
       return json({ erro: "tarefa desconhecida" }, 400);
     }
@@ -737,7 +861,9 @@ Deno.serve(async (req) => {
     if (body.acao === "cadastrar") {
       if (membro.papel === "acompanha") return json({ erro: "Seu perfil só acompanha disputas. Peça a alguém da equipe para cadastrar." }, 403);
       const emp = typeof body.empresa_id === "string" && /^[0-9a-f-]{36}$/i.test(body.empresa_id) ? body.empresa_id : null;
-      return json(await cadastrar(String(body.entrada || ""), email, emp));
+      const portalK = typeof body.portal === "string" && /^[a-z-]{2,15}$/.test(body.portal) ? body.portal : null;
+      const dataDica = typeof body.data === "string" && /^\d{4}-\d{2}-\d{2}$/.test(body.data) ? body.data : null;
+      return json(await cadastrar(String(body.entrada || ""), email, emp, portalK, dataDica));
     }
     if (body.acao === "verificar") {
       const { data: p } = await db.from("processos").select("*").eq("id", body.id).single();

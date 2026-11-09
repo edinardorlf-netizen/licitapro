@@ -1042,11 +1042,11 @@ function Processos({ ctx }) {
 
 /* Portais do cadastro. "auto" = o robô entra com o login da empresa e puxa "Seus Processos". */
 const PORTAIS_CADASTRO = [
-  { k: "pcp", auto: true },
-  { k: "licitar", nota: "O Licitar Digital bloqueia acesso automático (proteção contra robôs), então o robô não consegue entrar com o login. Cole o link do processo: ele é acompanhado pelo PNCP." },
-  { k: "comprasgov", nota: "Para o Compras.gov.br, cole o link do processo no PNCP ou o número de controle. A entrada automática com login ainda não está disponível." },
-  { k: "bll", nota: "Para a BLL, cole o link do processo no PNCP ou o número de controle. A entrada automática com login ainda não está disponível." },
-  { k: "licitacoes-e", nota: "Para o Licitações-e, cole o link do processo no PNCP ou o número de controle. A entrada automática com login ainda não está disponível." },
+  { k: "pcp", auto: true, id: "o número que fica no fim do link do processo (ex.: …/pe-39-2026-345678 → 345678)", nota: "Informe o ID do processo no Portal de Compras Públicas (ou cole o link). O robô acha o processo no PNCP e acompanha o chat, os lances e os documentos." },
+  { k: "licitar", id: "o “ID” que aparece no topo da página do processo (ex.: 117160)", nota: "O Licitar Digital bloqueia acesso automático com login, então informe o ID do processo (aparece em “ID:” na página dele) ou cole o link. O robô acha o processo no PNCP e acompanha por lá." },
+  { k: "comprasgov", id: "o número da compra que aparece no link (…compra=…)", nota: "Informe o número da compra, o link do processo ou o número de controle do PNCP. A entrada automática com login ainda não está disponível." },
+  { k: "bll", nota: "A BLL embaralha o número do processo no link, então para a BLL cole o link do processo no PNCP ou o número de controle (aparece na página do processo no portal)." },
+  { k: "licitacoes-e", id: "o número da licitação (Nº Licitação)", nota: "Informe o número da licitação no Licitações-e, o link do processo ou o número de controle do PNCP." },
   { k: "outro", nota: "Cole o link do processo no PNCP (pncp.gov.br/app/editais/…) ou o número de controle do PNCP." },
 ];
 
@@ -1058,6 +1058,7 @@ function NovoProcesso({ ctx, onClose }) {
   const [acessos, setAcessos] = useState(null);
   const [v, setV] = useState("");
   const [fav, setFav] = useState(true);
+  const [dataPub, setDataPub] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [res, setRes] = useState(null);
@@ -1081,10 +1082,10 @@ function NovoProcesso({ ctx, onClose }) {
   };
   const cadastrarLink = async (e) => {
     e.preventDefault();
-    if (!v.trim()) return setErr("Cole o link ou o número do processo.");
+    if (!v.trim()) return setErr(portalSel && portalSel.id ? "Informe o ID do processo no portal (ou cole o link)." : "Cole o link ou o número do processo.");
     setBusy(true); setErr("");
     try {
-      const r = await chamarRobo({ acao: "cadastrar", entrada: v.trim(), empresa_id: empId || null });
+      const r = await chamarRobo({ acao: "cadastrar", entrada: v.trim(), empresa_id: empId || null, portal: portalSel ? portalSel.k : null, data: dataPub || null });
       if (fav) {
         const { data: pr } = await sb.from("processos").select("etapa").eq("id", r.id).maybeSingle();
         await sb.from("processos").update({ favorito: true, ...(pr && pr.etapa === "analise" ? { etapa: "participar" } : {}) }).eq("id", r.id);
@@ -1167,7 +1168,7 @@ function NovoProcesso({ ctx, onClose }) {
               <div className="row-inline">
                 <button type="button" className="btn" onClick={onClose}>Pronto</button>
                 <button type="button" className="btn ghost" onClick={puxar}><Icon name="refresh" size={15} />Puxar de novo</button>
-                <button type="button" className="linkbtn" onClick={() => { setErr(""); setPasso("link"); }}>Cadastrar um processo pelo link</button>
+                <button type="button" className="linkbtn" onClick={() => { setErr(""); setPasso("link"); }}>Não encontrou um processo? Informe o ID dele</button>
               </div>
             )}
             <p className="hint" style={{ margin: 0 }}>O robô também puxa sozinho, todo dia às 6h40 e às 19h40. Ele só lê: não envia proposta, lance nem mensagem.</p>
@@ -1181,13 +1182,22 @@ function NovoProcesso({ ctx, onClose }) {
             )}
             {portalSel.nota && <p className="hint" style={{ margin: 0 }}>{portalSel.nota}</p>}
             <div className="field">
-              <label htmlFor="np-link">Link ou número do processo</label>
-              <textarea id="np-link" className="input" rows={3} value={v} onChange={(e) => setV(e.target.value)} placeholder={portalSel.k === "pcp" ? "https://www.portaldecompraspublicas.com.br/processos/MG/…" : "https://pncp.gov.br/app/editais/…"} />
+              <label htmlFor="np-link">{portalSel.id ? "ID do processo no portal (ou o link)" : "Link ou número do processo"}</label>
+              {portalSel.id
+                ? <input id="np-link" className="input num" value={v} onChange={(e) => setV(e.target.value)} placeholder={portalSel.k === "licitar" ? "Ex.: 117160" : portalSel.k === "pcp" ? "Ex.: 345678 ou o link do processo" : "Número ou link"} autoComplete="off" />
+                : <textarea id="np-link" className="input" rows={3} value={v} onChange={(e) => setV(e.target.value)} placeholder="https://pncp.gov.br/app/editais/…" />}
+              {portalSel.id && <small className="hint">É {portalSel.id}.</small>}
             </div>
+            {portalSel.id && (
+              <div className="field">
+                <label htmlFor="np-data">Publicado em <span style={{ fontWeight: 400, color: "var(--muted)" }}>(opcional, ajuda a achar mais rápido)</span></label>
+                <input id="np-data" className="input" type="date" value={dataPub} onChange={(e) => setDataPub(e.target.value)} style={{ maxWidth: 200 }} />
+              </div>
+            )}
             <label className="toggle" style={{ whiteSpace: "normal" }}><input type="checkbox" checked={fav} onChange={(e) => setFav(e.target.checked)} />⭐ Vamos participar (ainda não enviamos a proposta)</label>
             {err && <p className="err">{err}</p>}
             <div className="row-inline">
-              <button className="btn" disabled={busy}>{busy ? <><span className="spin" />Buscando o processo…</> : "Cadastrar e acompanhar"}</button>
+              <button className="btn" disabled={busy}>{busy ? <><span className="spin" />Buscando o processo… (pelo ID pode levar até 1 minuto)</> : "Cadastrar e acompanhar"}</button>
               <button type="button" className="btn ghost" disabled={busy} onClick={() => { setErr(""); setPasso("portal"); }}>Voltar</button>
             </div>
           </form>
