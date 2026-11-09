@@ -1720,6 +1720,7 @@ function Ajustes({ ctx }) {
       <div className="stack">
         <div className="top"><div><h1>Ajustes</h1><p>Alerta e conta neste celular</p></div></div>
         <div className="banner info"><span>Empresas, acessos aos portais, equipe e palavras-chave são configurados pelo <b>computador</b>.</span></div>
+        <Notificacoes notify={ctx.notify} />
         <SomAlerta />
         {conta}
       </div>
@@ -1732,6 +1733,7 @@ function Ajustes({ ctx }) {
       <div className="grid2">
         <div className="stack">
           <Equipe equipe={equipe} admin={admin} notify={notify} carregar={carregar} email={email} />
+          <Notificacoes notify={notify} />
           <SomAlerta />
         </div>
         <div className="stack">
@@ -1938,6 +1940,67 @@ function tocarAlerta() {
       o.stop(t0 + d + 0.2);
     });
   } catch (e) { /* ignora */ }
+}
+
+
+/* Notificações no computador/celular (Web Push): o robô avisa mesmo com o LicitaPro fechado. */
+const VAPID_PUBLICA = "BMXlhy6tnt_MfA-0E47P-YqpzEAMARcyDXOFfNhGnfVNmGSvEm0VYV0P8OuMitieNi50EUiAvIrp9GE4XMZwT10";
+const b64url = (s) => { const p = "=".repeat((4 - (s.length % 4)) % 4); const raw = atob((s + p).replace(/-/g, "+").replace(/_/g, "/")); return Uint8Array.from(raw, (c) => c.charCodeAt(0)); };
+const nomeAparelho = () => { const u = navigator.userAgent; const so = /Windows/.test(u) ? "Windows" : /Android/.test(u) ? "Android" : /iPhone|iPad/.test(u) ? "iPhone" : /Mac/.test(u) ? "Mac" : "Outro"; const nav = /Edg\//.test(u) ? "Edge" : /Chrome\//.test(u) ? "Chrome" : /Firefox\//.test(u) ? "Firefox" : /Safari\//.test(u) ? "Safari" : "navegador"; return `${so} · ${nav}`; };
+
+function Notificacoes({ notify }) {
+  const suporta = typeof window !== "undefined" && "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+  const [estado, setEstado] = useState("carregando"); // carregando | ligado | desligado | bloqueado | sem-suporte
+  const [busy, setBusy] = useState(false);
+  const conferir = async () => {
+    if (!suporta) return setEstado("sem-suporte");
+    if (Notification.permission === "denied") return setEstado("bloqueado");
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.getSubscription();
+      setEstado(sub && Notification.permission === "granted" ? "ligado" : "desligado");
+    } catch (_) { setEstado("desligado"); }
+  };
+  useEffect(() => { conferir(); }, []);
+  const ativar = async () => {
+    setBusy(true);
+    try {
+      const perm = await Notification.requestPermission();
+      if (perm !== "granted") { setEstado(perm === "denied" ? "bloqueado" : "desligado"); notify("As notificações não foram permitidas neste navegador."); return; }
+      const reg = await navigator.serviceWorker.ready;
+      let sub = await reg.pushManager.getSubscription();
+      if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64url(VAPID_PUBLICA) });
+      const j = sub.toJSON();
+      const { error } = await sb.from("push_inscricoes").upsert({ endpoint: j.endpoint, p256dh: j.keys.p256dh, auth: j.keys.auth, aparelho: nomeAparelho(), falhas: 0 }, { onConflict: "endpoint" });
+      if (error) throw error;
+      setEstado("ligado");
+      await chamarRobo({ acao: "push_teste" }).catch(() => {});
+      notify("Notificações ligadas neste aparelho. Mandei uma de teste.");
+    } catch (e) { notify(errMsg(e)); } finally { setBusy(false); }
+  };
+  const desligar = async () => {
+    setBusy(true);
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.getSubscription();
+      if (sub) { await sb.from("push_inscricoes").delete().eq("endpoint", sub.endpoint); await sub.unsubscribe(); }
+      setEstado("desligado"); notify("Notificações desligadas neste aparelho.");
+    } catch (e) { notify(errMsg(e)); } finally { setBusy(false); }
+  };
+  const testar = async () => { setBusy(true); try { const r = await chamarRobo({ acao: "push_teste" }); notify(r && r.enviados ? "Notificação de teste enviada." : "Nenhum aparelho seu recebeu. Ative de novo."); } catch (e) { notify(errMsg(e)); } finally { setBusy(false); } };
+  const tag = estado === "ligado" ? <span className="tag" style={{ background: "var(--green-soft)", color: "var(--green)" }}>Ligado</span> : <span className="tag">Desligado</span>;
+  return (
+    <div className="card form">
+      <div className="card-h" style={{ marginBottom: 0 }}><h2>Notificações neste aparelho</h2>{tag}</div>
+      <p className="hint">O robô avisa no canto da tela (Windows) ou no celular quando houver movimentação importante: pregoeiro citando a empresa, item arrematado ou perdido, resultado, suspensão, documentos e lembretes de sessão. Funciona com o LicitaPro fechado, desde que o navegador esteja aberto.</p>
+      {estado === "sem-suporte" && <p className="hint">Este navegador não aceita notificações. Use o Chrome ou o Edge (no iPhone, instale o LicitaPro na tela de início).</p>}
+      {estado === "bloqueado" && <p className="err">As notificações estão bloqueadas para o LicitaPro neste navegador. Clique no cadeado ao lado do endereço › Notificações › Permitir, e depois em “Ativar”.</p>}
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+        {estado !== "ligado" && estado !== "sem-suporte" && <button type="button" className="btn" disabled={busy || estado === "carregando"} onClick={ativar}>{busy ? <><span className="spin" />Ativando…</> : "Ativar notificações"}</button>}
+        {estado === "ligado" && <><button type="button" className="btn ghost sm" disabled={busy} onClick={testar}>Mandar uma de teste</button><button type="button" className="btn ghost sm" disabled={busy} onClick={desligar}>Desligar neste aparelho</button></>}
+      </div>
+    </div>
+  );
 }
 
 function SomAlerta() {

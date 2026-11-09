@@ -14,6 +14,7 @@
 // O Licitar Digital bloqueia acesso automático, então ele é acompanhado pelo PNCP.
 // =====================================================================
 import { createClient } from "npm:@supabase/supabase-js@2.49.4";
+import webpush from "npm:web-push@3.6.7";
 
 const SB_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -581,8 +582,52 @@ async function verificarProcesso(p: any, opts: { inicial?: boolean } = {}) {
   return { novas: movs.length, importantes: importantes.length };
 }
 
-// ---------- Aviso pelo Telegram (opcional) ----------
+// ---------- Notificações no computador/celular (Web Push) ----------
+let vapidPronto: boolean | null = null;
+async function prepararPush() {
+  if (vapidPronto !== null) return vapidPronto;
+  const { data } = await db.from("segredos").select("chave,valor").in("chave", ["vapid_publica", "vapid_privada"]);
+  const k = Object.fromEntries((data || []).map((r: any) => [r.chave, r.valor]));
+  if (!k.vapid_publica || !k.vapid_privada) return (vapidPronto = false);
+  webpush.setVapidDetails("mailto:licitapro@auraxis.app", k.vapid_publica, k.vapid_privada);
+  return (vapidPronto = true);
+}
+// Manda para todos os aparelhos ativados (ou só os de um e-mail). Inscrição vencida é apagada.
+async function enviarPush(msg: { titulo: string; corpo: string; url?: string; tag?: string; fixar?: boolean }, soEmail?: string) {
+  if (!(await prepararPush())) return 0;
+  let q = db.from("push_inscricoes").select("id,endpoint,p256dh,auth,email,falhas");
+  if (soEmail) q = q.eq("email", soEmail);
+  else {
+    const { data: ativos } = await db.from("equipe").select("email").eq("ativo", true);
+    q = q.in("email", (ativos || []).map((a: any) => a.email));
+  }
+  const { data: subs } = await q;
+  let ok = 0;
+  await Promise.all((subs || []).map(async (s: any) => {
+    try {
+      await webpush.sendNotification({ endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } }, JSON.stringify(msg), { TTL: 6 * 3600, urgency: msg.fixar ? "high" : "normal" });
+      ok++;
+      await db.from("push_inscricoes").update({ ultimo_envio: new Date().toISOString(), falhas: 0 }).eq("id", s.id);
+    } catch (e: any) {
+      const st = Number(e?.statusCode || 0);
+      if (st === 404 || st === 410 || s.falhas >= 5) await db.from("push_inscricoes").delete().eq("id", s.id);
+      else await db.from("push_inscricoes").update({ falhas: (s.falhas || 0) + 1 }).eq("id", s.id);
+    }
+  }));
+  return ok;
+}
+
+// ---------- Aviso pelo Telegram e notificação ----------
 async function avisar(p: any, movs: Mov[]) {
+  try {
+    const m0 = movs[0];
+    const urgente = movs.some((m) => /🔴|🏆|inabilita|desclassific|suspens|convoc|diligenc|menos de 1 hora/i.test(`${m.titulo} ${m.detalhe || ""}`));
+    await enviarPush({
+      titulo: `${p.orgao || "Processo"}${p.numero ? ` · ${p.numero}` : ""}`.slice(0, 90),
+      corpo: (movs.length > 1 ? `${m0.titulo} (+${movs.length - 1})` : `${m0.titulo}${m0.detalhe ? ` — ${m0.detalhe}` : ""}`).slice(0, 220),
+      url: `${APP_URL}#p=${p.id}`, tag: `p-${p.id}`, fixar: urgente,
+    });
+  } catch (_) { /* notificação é opcional */ }
   const [{ data: cfg }, { data: seg }] = await Promise.all([
     db.from("config").select("telegram_chat_id,telegram_ativo").eq("id", 1).single(),
     db.from("segredos").select("valor").eq("chave", "telegram_token").maybeSingle(),
@@ -864,6 +909,10 @@ Deno.serve(async (req) => {
       const portalK = typeof body.portal === "string" && /^[a-z-]{2,15}$/.test(body.portal) ? body.portal : null;
       const dataDica = typeof body.data === "string" && /^\d{4}-\d{2}-\d{2}$/.test(body.data) ? body.data : null;
       return json(await cadastrar(String(body.entrada || ""), email, emp, portalK, dataDica));
+    }
+    if (body.acao === "push_teste") {
+      const enviados = await enviarPush({ titulo: "LicitaPro", corpo: "✅ Notificações ligadas neste aparelho. Os avisos do robô vão aparecer assim.", url: APP_URL, tag: "teste" }, email);
+      return json({ ok: true, enviados });
     }
     if (body.acao === "verificar") {
       const { data: p } = await db.from("processos").select("*").eq("id", body.id).single();
