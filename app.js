@@ -248,6 +248,7 @@ textarea.input{height:auto;min-height:80px;padding:10px 11px;resize:vertical}
 .catgrid mark{background:#fff3b0;color:inherit;border-radius:3px}
 .catbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between}
 .catsalvar{position:sticky;bottom:10px;display:flex;gap:8px;align-items:center;justify-content:flex-end;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:8px 10px;box-shadow:0 4px 16px rgba(0,0,0,.08);flex-wrap:wrap}
+@media (max-width:880px){.catsalvar{bottom:calc(80px + env(safe-area-inset-bottom,0px))}}
 .word{display:inline-flex;align-items:center;gap:4px;border:1px solid var(--line);border-radius:99px;padding:3px 4px 3px 10px;font-size:12.5px;background:var(--surface)}
 .word button{border:0;background:var(--line-2);border-radius:99px;width:20px;height:20px;font-size:11px;color:var(--muted)}
 .word.ex{background:var(--red-soft);border-color:#F5C6C6}
