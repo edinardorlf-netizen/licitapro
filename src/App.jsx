@@ -239,7 +239,7 @@ textarea.input{height:auto;min-height:80px;padding:10px 11px;resize:vertical}
 .wordlist{display:flex;flex-wrap:wrap;gap:6px}
 .catgrid{columns:250px;column-gap:28px;margin-top:4px}
 .catgrp{break-inside:avoid;margin:0 0 16px;display:block}
-.catgrp>label{font-weight:700;font-size:14px;margin-bottom:4px}
+.catgrid label.cathead{font-weight:700;font-size:14px;margin-bottom:2px;color:var(--ink)}
 .catgrid label{display:flex;gap:9px;align-items:flex-start;padding:3px 0;font-size:13px;line-height:1.35;cursor:pointer;color:var(--ink-2)}
 .catgrid label input{width:17px;height:17px;flex:0 0 17px;margin-top:1px;accent-color:#5bb5a2;cursor:pointer}
 .catgrid label.on{color:var(--ink)}
@@ -2156,7 +2156,7 @@ function CategoriasRadar({ pode, notify, onSalvo, lista, recarregar }) {
           const n = ids.filter((id) => sel.has(id)).length;
           return (
             <div className="catgrp" key={g.nome}>
-              <label className={n ? "on" : ""}>
+              <label className="cathead">
                 <input type="checkbox" checked={n === ids.length} ref={(el) => { if (el) el.indeterminate = n > 0 && n < ids.length; }} onChange={() => trocar(ids, n < ids.length)} disabled={!pode} />
                 <span>{realce(g.nome)}</span>
               </label>
