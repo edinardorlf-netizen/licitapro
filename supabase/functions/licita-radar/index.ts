@@ -45,8 +45,6 @@ async function pncpGet(path: string): Promise<any> {
   return t ? JSON.parse(t) : null;
 }
 
-const norm = (s: string) =>
-  ` ${(s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()} `;
 // Datas do PNCP vêm no horário de Brasília sem fuso.
 const brt = (s?: string | null) => (s ? (/[zZ]|[+-]\d\d:\d\d$/.test(s) ? s : `${s}-03:00`) : null);
 const ymd = (d: Date) => {
@@ -70,21 +68,11 @@ function portalDe(link?: string | null, sistema?: string | null): string {
 }
 
 async function carregarConfig() {
-  const [{ data: cfg }, { data: pal }] = await Promise.all([
-    db.from("config").select("*").eq("id", 1).single(),
-    db.from("palavras").select("termo,tipo"),
-  ]);
-  const incluir = (pal || []).filter((p) => p.tipo === "incluir").map((p) => ({ termo: p.termo, n: norm(p.termo).trimEnd() }));
-  const excluir = (pal || []).filter((p) => p.tipo === "excluir").map((p) => ({ termo: p.termo, n: norm(p.termo).trimEnd() }));
-  return { cfg: cfg || { uf: "MG", ufs: ["MG"], modalidades: [6, 8] }, incluir, excluir };
+  const { data: cfg } = await db.from("config").select("*").eq("id", 1).single();
+  return { cfg: cfg || { uf: "MG", ufs: ["MG"], modalidades: [6, 8] } };
 }
-
-function classificar(objeto: string, incluir: { termo: string; n: string }[], excluir: { termo: string; n: string }[]) {
-  const t = norm(objeto);
-  const achados = incluir.filter((p) => t.includes(p.n)).map((p) => p.termo);
-  const barrado = excluir.some((p) => t.includes(p.n));
-  return { termos: achados, relevante: achados.length > 0 && !barrado };
-}
+// A classificação (categorias marcadas + palavras extras) é feita no banco, pelo gatilho
+// editais_classificar, para valer igual aqui e quando a equipe muda as categorias no app.
 
 // ---------- Detalhe do edital: dados completos, documentos e itens ----------
 async function detalharEdital(ed: { id: string; cnpj: string; ano: number; seq: number }) {
@@ -146,7 +134,7 @@ async function detalharEdital(ed: { id: string; cnpj: string; ano: number; seq: 
 
 // ---------- Radar ----------
 async function radar(deadline: number) {
-  const { cfg, incluir, excluir } = await carregarConfig();
+  const { cfg } = await carregarConfig();
   const hoje = new Date();
   const ontem = new Date(hoje.getTime() - 24 * 3600e3);
   let lidos = 0, relevantes = 0, paginas = 0, detalhados = 0, aviso = "";
@@ -176,8 +164,6 @@ async function radar(deadline: number) {
         const lista: any[] = (res && res.data) || [];
         if (!lista.length) break;
         const linhas = lista.map((d) => {
-          const { termos, relevante } = classificar(`${d.objetoCompra || ""} ${d.informacaoComplementar || ""}`, incluir, excluir);
-          if (relevante) relevantes++;
           return {
             controle_pncp: d.numeroControlePNCP,
             cnpj: d.orgaoEntidade?.cnpj,
@@ -203,13 +189,12 @@ async function radar(deadline: number) {
             sistema: d.usuarioNome,
             portal: portalDe(d.linkSistemaOrigem, d.usuarioNome),
             situacao: d.situacaoCompraNome,
-            termos,
-            relevante,
             updated_at: new Date().toISOString(),
           };
         });
         lidos += linhas.length;
-        const { error } = await db.from("editais").upsert(linhas, { onConflict: "controle_pncp" });
+        const { data: salvos, error } = await db.from("editais").upsert(linhas, { onConflict: "controle_pncp" }).select("relevante");
+        relevantes += (salvos || []).filter((x) => x.relevante).length;
         if (error) throw new Error(`Erro ao salvar editais: ${error.message}`);
         if (pagina >= (res.totalPaginas || 1)) break;
       }

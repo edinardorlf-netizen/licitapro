@@ -237,6 +237,15 @@ textarea.input{height:auto;min-height:80px;padding:10px 11px;resize:vertical}
 @keyframes sp{to{transform:rotate(360deg)}}
 @media (prefers-reduced-motion:reduce){.spin{animation:none}}
 .wordlist{display:flex;flex-wrap:wrap;gap:6px}
+.catgrid{columns:250px;column-gap:28px;margin-top:4px}
+.catgrp{break-inside:avoid;margin:0 0 16px;display:block}
+.catgrp>label{font-weight:700;font-size:14px;margin-bottom:4px}
+.catgrid label{display:flex;gap:9px;align-items:flex-start;padding:3px 0;font-size:13px;line-height:1.35;cursor:pointer;color:var(--ink-2)}
+.catgrid label input{width:17px;height:17px;flex:0 0 17px;margin-top:1px;accent-color:#5bb5a2;cursor:pointer}
+.catgrid label.on{color:var(--ink)}
+.catgrid mark{background:#fff3b0;color:inherit;border-radius:3px}
+.catbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between}
+.catsalvar{position:sticky;bottom:10px;display:flex;gap:8px;align-items:center;justify-content:flex-end;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:8px 10px;box-shadow:0 4px 16px rgba(0,0,0,.08);flex-wrap:wrap}
 .word{display:inline-flex;align-items:center;gap:4px;border:1px solid var(--line);border-radius:99px;padding:3px 4px 3px 10px;font-size:12.5px;background:var(--surface)}
 .word button{border:0;background:var(--line-2);border-radius:99px;width:20px;height:20px;font-size:11px;color:var(--muted)}
 .word.ex{background:var(--red-soft);border-color:#F5C6C6}
@@ -649,6 +658,13 @@ function Radar({ ctx }) {
   const [ocupado, setOcupado] = useState("");
   const [rodando, setRodando] = useState(false);
   const [aberto, setAberto] = useState(null);
+  const [cats, recarregarCats] = useCategoriasRadar();
+  const [verCats, setVerCats] = useState(false);
+  const [cat, setCat] = useState(() => lerPref("lp-radar-cat", "todas"));
+  const catsOn = (cats || []).filter((c) => c.ativa);
+  const nomeCat = Object.fromEntries((cats || []).map((c) => [c.id, c.nome]));
+  useEffect(() => { gravarPref("lp-radar-cat", cat); }, [cat]);
+  useEffect(() => { if (cats && cat !== "todas" && !catsOn.some((c) => c.id === cat)) setCat("todas"); }, [cats]);
 
   useEffect(() => { const t = setTimeout(() => setBusca(q.trim()), 350); return () => clearTimeout(t); }, [q]);
   useEffect(() => { sb.rpc("regioes_uf", { p_ufs: ufsRadar }).then(({ data }) => setMapa(data || [])); }, [ufsRadar.join(",")]);
@@ -669,6 +685,7 @@ function Radar({ ctx }) {
     if (uf !== "todos") query = query.eq("uf", uf);
     if (regiao !== "todas") query = query.eq("regiao", regiao);
     if (ddds.length) query = query.in("ddd", ddds);
+    if (cat !== "todas") query = query.contains("categorias", [cat]);
     if (busca) {
       const s = busca.replace(/[,()%*]/g, " ").trim();
       if (s) query = query.or(`objeto.ilike.%${s}%,orgao.ilike.%${s}%,municipio.ilike.%${s}%`);
@@ -677,7 +694,7 @@ function Radar({ ctx }) {
     const { data, count, error } = await query.limit(limite);
     if (error) { notify(errMsg(error)); setLista([]); return; }
     setLista(data); setTotal(count || 0);
-  }, [modo, port, busca, limite, uf, regiao, ddds.join(",")]);
+  }, [modo, port, busca, limite, uf, regiao, ddds.join(","), cat]);
   useEffect(() => { carregar(); }, [carregar]);
 
   const atualizar = (e) => { setLista((l) => (l || []).map((x) => (x.id === e.id ? { ...x, ...e } : x))); setAberto((a) => (a && a.id === e.id ? { ...a, ...e } : a)); };
@@ -760,15 +777,25 @@ function Radar({ ctx }) {
           </div>
           {filtrosAtivos > 0 && <button className="linkbtn" style={{ fontSize: 12.5 }} onClick={() => { setUf("todos"); setRegiao("todas"); setDdds([]); }}>Limpar local</button>}
         </div>
+        <div className="fsel">
+          <select className="input" value={cat} onChange={(e) => { setCat(e.target.value); setLimite(50); }} aria-label="Categoria" style={{ maxWidth: 360 }}>
+            <option value="todas">Todas as categorias marcadas ({catsOn.length})</option>
+            {[...new Set(catsOn.map((c) => c.grupo))].map((g) => (
+              <optgroup key={g} label={g}>{catsOn.filter((c) => c.grupo === g).map((c) => <option key={c.id} value={c.id}>{c.nome}</option>)}</optgroup>
+            ))}
+          </select>
+          <button className={`btn ${verCats ? "" : "ghost"} sm`} onClick={() => setVerCats(!verCats)} aria-expanded={verCats}>{verCats ? "Fechar categorias" : "☑ Escolher categorias"}</button>
+        </div>
         <div className="chips">
           {[["todos", "Todos os portais"], ["pcp", PORTAIS.pcp.nome], ["licitar", PORTAIS.licitar.nome], ["comprasgov", PORTAIS.comprasgov.nome], ["bll", PORTAIS.bll.nome], ["licitacoes-e", PORTAIS["licitacoes-e"].nome], ["outros", "Outros"]].map(([k, l]) => (
             <button key={k} className={`chip${port === k ? " on" : ""}`} onClick={() => { setPort(k); setLimite(50); }}>{l}</button>
           ))}
         </div>
       </div>
+      {verCats && <CategoriasRadar pode={pode} notify={notify} lista={cats} recarregar={recarregarCats} onSalvo={() => { setVerCats(false); carregar(); }} />}
       <div className="card">
         <div className="card-h"><h2>{lista === null ? "Carregando…" : `${total} ${total === 1 ? "edital" : "editais"}`}</h2><small>{modo === "descartados" ? "Somem sozinhos depois da data da sessão" : "Ordenados pela data da sessão · toque para ver detalhes e documentos"}</small></div>
-        {lista && !lista.length && <div className="empty"><b>Nada por aqui</b>{modo === "relevantes" ? "O radar roda a cada hora. Ajuste as palavras-chave ou os filtros de local se estiver deixando algo de fora." : "Tente outro filtro ou busca."}</div>}
+        {lista && !lista.length && <div className="empty"><b>Nada por aqui</b>{modo === "relevantes" ? "O radar roda a cada hora. Marque mais categorias ou ajuste os filtros de local se estiver deixando algo de fora." : "Tente outro filtro ou busca."}</div>}
         {lista && lista.length > 0 && (
           <div>
             {lista.map((e) => (
@@ -789,7 +816,9 @@ function Radar({ ctx }) {
                   {e.srp && <span>Registro de preços</span>}
                   {Array.isArray(e.documentos) && <span>📎 {e.documentos.length} documento(s)</span>}
                 </div>
-                {e.termos && e.termos.length > 0 && <div className="termos">{e.termos.slice(0, 6).map((t) => <span key={t}>{t}</span>)}</div>}
+                {e.categorias && e.categorias.length > 0
+                  ? <div className="termos">{e.categorias.slice(0, 4).map((c) => <span key={c}>{nomeCat[c] || c}</span>)}</div>
+                  : e.termos && e.termos.length > 0 && <div className="termos">{e.termos.slice(0, 6).map((t) => <span key={t}>{t}</span>)}</div>}
                 <div className="row-inline">
                   <button className="btn ghost sm" onClick={() => setAberto(e)}>Ver detalhes</button>
                   <BotoesEdital e={e} {...acoes} />
@@ -1728,8 +1757,9 @@ function Ajustes({ ctx }) {
   }
   return (
     <div className="stack">
-      <div className="top"><div><h1>Ajustes</h1><p>Empresas, acessos, equipe, palavras-chave e avisos</p></div></div>
+      <div className="top"><div><h1>Ajustes</h1><p>Empresas, acessos, categorias do radar, equipe e avisos</p></div></div>
       <Empresas ctx={ctx} />
+      <CategoriasAjustes pode={pode} notify={notify} />
       <div className="grid2">
         <div className="stack">
           <Equipe equipe={equipe} admin={admin} notify={notify} carregar={carregar} email={email} />
@@ -2068,6 +2098,90 @@ function Equipe({ equipe, admin, notify, carregar, email }) {
   );
 }
 
+/* ---------- Categorias do radar (lista para marcar, como no Licitar Digital) ---------- */
+function useCategoriasRadar() {
+  const [lista, setLista] = useState(null);
+  const carregar = useCallback(() => sb.from("radar_categorias").select("id,grupo,nome,ordem,ativa").order("ordem").then(({ data }) => setLista(data || [])), []);
+  useEffect(() => { carregar(); }, [carregar]);
+  return [lista, carregar];
+}
+
+function CategoriasAjustes({ pode, notify }) {
+  const [lista, recarregar] = useCategoriasRadar();
+  return <CategoriasRadar pode={pode} notify={notify} lista={lista} recarregar={recarregar} />;
+}
+
+function CategoriasRadar({ pode, notify, onSalvo, lista, recarregar }) {
+  const [sel, setSel] = useState(null);
+  const [q, setQ] = useState("");
+  const [salvando, setSalvando] = useState(false);
+  useEffect(() => { if (lista) setSel(new Set(lista.filter((c) => c.ativa).map((c) => c.id))); }, [lista]);
+  if (!lista || !sel) return <div className="card"><span className="spin" /> Carregando categorias…</div>;
+  const original = new Set(lista.filter((c) => c.ativa).map((c) => c.id));
+  const mudou = sel.size !== original.size || [...sel].some((id) => !original.has(id));
+  const sa = (t) => (t || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  const busca = sa(q.trim());
+  const grupos = [];
+  for (const c of lista) {
+    if (busca && !sa(`${c.grupo} ${c.nome}`).includes(busca)) continue;
+    let g = grupos.find((x) => x.nome === c.grupo);
+    if (!g) grupos.push((g = { nome: c.grupo, itens: [] }));
+    g.itens.push(c);
+  }
+  const trocar = (ids, on) => { if (!pode) return; const n = new Set(sel); ids.forEach((id) => (on ? n.add(id) : n.delete(id))); setSel(n); };
+  const realce = (t) => {
+    if (!busca) return t;
+    const i = sa(t).indexOf(busca);
+    return i < 0 ? t : <>{t.slice(0, i)}<mark>{t.slice(i, i + busca.length)}</mark>{t.slice(i + busca.length)}</>;
+  };
+  const salvar = async () => {
+    setSalvando(true);
+    const { data, error } = await sb.rpc("salvar_categorias", { p_ids: [...sel] });
+    setSalvando(false);
+    if (error) return notify(errMsg(error));
+    notify(`Categorias salvas. ${data} ${data === 1 ? "edital aberto aparece" : "editais abertos aparecem"} no radar.`);
+    await recarregar();
+    if (onSalvo) onSalvo();
+  };
+  return (
+    <div className="card form">
+      <div className="catbar">
+        <div className="card-h" style={{ marginBottom: 0 }}><h2>Categorias do radar</h2><small style={{ marginLeft: 8 }}>{sel.size} de {lista.length} marcadas</small></div>
+        <input className="input" style={{ maxWidth: 280 }} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Procurar categoria" aria-label="Procurar categoria" />
+      </div>
+      <p className="hint">Marque o que a empresa vende. O radar mostra só os editais cujo objeto é de alguma categoria marcada. {pode ? "Clique no nome do grupo para marcar ou desmarcar o grupo inteiro." : "Só quem cadastra processos pode mudar as categorias."}</p>
+      <div className="catgrid">
+        {grupos.map((g) => {
+          const ids = g.itens.map((c) => c.id);
+          const n = ids.filter((id) => sel.has(id)).length;
+          return (
+            <div className="catgrp" key={g.nome}>
+              <label className={n ? "on" : ""}>
+                <input type="checkbox" checked={n === ids.length} ref={(el) => { if (el) el.indeterminate = n > 0 && n < ids.length; }} onChange={() => trocar(ids, n < ids.length)} disabled={!pode} />
+                <span>{realce(g.nome)}</span>
+              </label>
+              {g.itens.map((c) => (
+                <label key={c.id} className={sel.has(c.id) ? "on" : ""}>
+                  <input type="checkbox" checked={sel.has(c.id)} onChange={(e) => trocar([c.id], e.target.checked)} disabled={!pode} />
+                  <span>{realce(c.nome)}</span>
+                </label>
+              ))}
+            </div>
+          );
+        })}
+        {!grupos.length && <div className="hint">Nenhuma categoria com “{q}”.</div>}
+      </div>
+      {pode && mudou && (
+        <div className="catsalvar">
+          <span className="hint" style={{ marginRight: "auto" }}>Alterações não salvas</span>
+          <button className="btn ghost sm" onClick={() => setSel(original)} disabled={salvando}>Desfazer</button>
+          <button className="btn" onClick={salvar} disabled={salvando}>{salvando ? <span className="spin" /> : null}Salvar e atualizar o radar</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Palavras({ pode, notify }) {
   const [lista, setLista] = useState([]);
   const [termo, setTermo] = useState("");
@@ -2080,15 +2194,15 @@ function Palavras({ pode, notify }) {
     if (t.length < 2) return;
     const { error } = await sb.from("palavras").insert({ termo: t, tipo });
     if (error) return notify(/duplicate/i.test(error.message) ? "Essa palavra já está na lista" : errMsg(error));
-    setTermo(""); carregar(); notify("Palavra adicionada. Vale para os próximos editais do radar.");
+    setTermo(""); carregar(); await sb.rpc("reclassificar_editais"); notify("Palavra adicionada. O radar já foi atualizado.");
   };
-  const del = async (p) => { const { error } = await sb.from("palavras").delete().eq("id", p.id); if (error) return notify(errMsg(error)); carregar(); };
+  const del = async (p) => { const { error } = await sb.from("palavras").delete().eq("id", p.id); if (error) return notify(errMsg(error)); carregar(); sb.rpc("reclassificar_editais"); };
   const inc = lista.filter((p) => p.tipo === "incluir");
   const exc = lista.filter((p) => p.tipo === "excluir");
   return (
     <div className="card form">
-      <div className="card-h" style={{ marginBottom: 0 }}><h2>Palavras-chave do radar</h2></div>
-      <p className="hint">O radar marca como relevante o edital cujo objeto contém alguma palavra de <b>incluir</b> e nenhuma de <b>excluir</b>. Acentos e maiúsculas não importam, e o começo da palavra já basta: “medicament” pega “medicamentos”.</p>
+      <div className="card-h" style={{ marginBottom: 0 }}><h2>Palavras extras do radar</h2></div>
+      <p className="hint">Opcional, além das categorias. <b>Incluir</b>: traz também editais com essa palavra, mesmo fora das categorias marcadas. <b>Excluir</b>: esconde editais com essa palavra (a não ser que ela faça parte de uma categoria marcada). Acentos e maiúsculas não importam, e o começo da palavra já basta.</p>
       <div><span className="flabel">Incluir ({inc.length})</span><div className="wordlist" style={{ marginTop: 6 }}>{inc.map((p) => <span className="word" key={p.id}>{p.termo}{pode && <button onClick={() => del(p)} aria-label={`Remover ${p.termo}`}>✕</button>}</span>)}</div></div>
       <div><span className="flabel">Excluir ({exc.length})</span><div className="wordlist" style={{ marginTop: 6 }}>{exc.map((p) => <span className="word ex" key={p.id}>{p.termo}{pode && <button onClick={() => del(p)} aria-label={`Remover ${p.termo}`}>✕</button>}</span>)}</div></div>
       {pode && (
