@@ -261,6 +261,7 @@ const Icon = ({ name, size = 20 }) => {
     radar: <><circle cx="12" cy="12" r="9" /><circle cx="12" cy="12" r="5" /><path d="M12 12 18 6" /></>,
     folder: <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" />,
     cal: <><rect x="3.5" y="5" width="17" height="15" rx="2.5" /><path d="M3.5 10h17M8 3v4M16 3v4" /></>,
+    file: <><path d="M6 3h8l4 4v14H6Z" /><path d="M14 3v4h4M9 12h6M9 16h6" /></>,
     cog: <><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z" /></>,
     left: <path d="m15 18-6-6 6-6" />,
     plus: <path d="M12 5v14M5 12h14" />,
@@ -288,6 +289,7 @@ const TABS = [
   { id: "inicio", nome: "Início", icon: "home" },
   { id: "radar", nome: "Radar", icon: "radar" },
   { id: "processos", nome: "Processos", icon: "folder" },
+  { id: "contratos", nome: "Contratos", icon: "file" },
   { id: "agenda", nome: "Agenda", icon: "cal" },
   { id: "robo", nome: "Robô", icon: "bot" },
   { id: "ajustes", nome: "Ajustes", icon: "cog" },
@@ -523,6 +525,7 @@ function Painel({ session, papel, notify }) {
   else if (tab === "inicio") tela = <Inicio ctx={ctx} />;
   else if (tab === "radar") tela = <Radar ctx={ctx} />;
   else if (tab === "processos") tela = <Processos ctx={ctx} />;
+  else if (tab === "contratos") tela = <Contratos ctx={ctx} />;
   else if (tab === "agenda") tela = <Agenda ctx={ctx} />;
   else if (tab === "robo") tela = <Simulador ctx={ctx} />;
   else tela = <Ajustes ctx={ctx} />;
@@ -1066,6 +1069,132 @@ function Processos({ ctx }) {
         </div>
       )}
       {novo && <NovoProcesso ctx={ctx} onClose={() => setNovo(false)} />}
+    </div>
+  );
+}
+
+/* ============================================================
+   Contratos: mesmo layout de Processos, só com os itens vencidos
+   (cada processo com itens ganhos vira um "contrato").
+   ============================================================ */
+function Contratos({ ctx }) {
+  const { pode, equipe, empresas, notify, abrir, procs } = ctx;
+  const [gan, setGan] = useState(null);
+  const [emp, setEmp] = useState("todas");
+  const [q, setQ] = useState("");
+  const [sel, setSel] = useState(null);
+  const variasEmpresas = empresas.length > 1;
+  const empDe = (id) => empresas.find((e) => e.id === id);
+  const nomeDe = (e) => (equipe.find((p) => p.email === e) || {}).nome || (e ? e.split("@")[0] : "—");
+
+  const carregarGanhos = async () => {
+    let todos = [];
+    for (let de = 0; de < 20000; de += 1000) {
+      const { data, error } = await sb.from("itens_ganhos")
+        .select("*, processos(orgao,numero,municipio,objeto,portal,etapa,resultado,empresa_id,responsavel,data_sessao)")
+        .order("numero", { ascending: true }).range(de, de + 999);
+      if (error) { notify(errMsg(error)); break; }
+      todos = todos.concat(data || []);
+      if (!data || data.length < 1000) break;
+    }
+    setGan(todos);
+  };
+  useEffect(() => { carregarGanhos(); }, [procs]);
+
+  const grupos = useMemo(() => {
+    const m = {};
+    (gan || []).forEach((g) => {
+      if (!g.processos) return;
+      const e = (m[g.processo_id] = m[g.processo_id] || { id: g.processo_id, p: g.processos, itens: [] });
+      e.itens.push(g);
+    });
+    return Object.values(m).map((c) => {
+      const datas = c.itens.map((i) => i.vigencia_fim).filter(Boolean).sort();
+      const un = (k) => [...new Set(c.itens.map((i) => i[k]).filter(Boolean))];
+      return {
+        ...c,
+        total: c.itens.reduce((a, i) => a + (Number(i.quantidade) || 0) * (Number(i.valor_unitario) || 0), 0),
+        ata: un("ata_numero"), contrato: un("contrato_numero"),
+        vigFim: datas.length ? datas[datas.length - 1] : null,
+      };
+    });
+  }, [gan]);
+
+  const daEmpresa = grupos.filter((c) => emp === "todas" || (emp === "sem" ? !c.p.empresa_id : c.p.empresa_id === emp));
+  const lista = daEmpresa.filter((c) => !q || `${c.p.orgao} ${c.p.municipio} ${c.p.numero} ${c.p.objeto} ${c.ata.join(" ")} ${c.contrato.join(" ")}`.toLowerCase().includes(q.toLowerCase()))
+    .sort((a, b) => ((b.p.data_sessao || "") < (a.p.data_sessao || "") ? -1 : 1));
+  const totalGeral = daEmpresa.reduce((a, c) => a + c.total, 0);
+  const itensGeral = daEmpresa.reduce((a, c) => a + c.itens.length, 0);
+
+  if (sel) {
+    const c = grupos.find((x) => x.id === sel);
+    if (!c) { return <div className="stack"><button className="btn ghost sm" style={{ alignSelf: "flex-start" }} onClick={() => setSel(null)}><Icon name="left" size={15} />Contratos</button><div className="card empty">Carregando…</div></div>; }
+    return (
+      <div className="stack">
+        <div className="top">
+          <div>
+            <button className="btn ghost sm" style={{ marginBottom: 8 }} onClick={() => setSel(null)}><Icon name="left" size={15} />Contratos</button>
+            <h1>{c.p.orgao || "Contrato"}</h1>
+            <p>{[c.p.municipio, c.p.numero && `Nº ${c.p.numero}`].filter(Boolean).join(" · ")}</p>
+          </div>
+          <button className="btn ghost" onClick={() => abrir(c.id)}>Abrir processo</button>
+        </div>
+        <div className="card"><div className="hint clamp2" style={{ color: "var(--ink-2)" }}>{c.p.objeto}</div>
+          <div className="row-inline" style={{ marginTop: 8 }}><PortalTag k={c.p.portal} /><ResultadoTag id={c.p.resultado} /><span className="tag ok">{c.itens.length} item(ns) vencido(s)</span><span className="tag">Total {brl(c.total)}</span></div>
+        </div>
+        <ItensGanhos lista={c.itens} pode={pode} notify={notify} onMudou={carregarGanhos} unico abrir={abrir} />
+      </div>
+    );
+  }
+
+  return (
+    <div className="stack">
+      <div className="top"><div><h1>Contratos</h1><p>Itens vencidos, organizados por processo como se fossem o contrato gerado</p></div></div>
+      <div className="grid3">
+        <div className="card kpi"><small>Contratos</small><b className="num">{daEmpresa.length}</b><small>Processos com itens vencidos</small></div>
+        <div className="card kpi"><small>Itens vencidos</small><b className="num">{itensGeral}</b><small>Em todos os contratos</small></div>
+        <div className="card kpi"><small>Valor total</small><b className="num">{brl(totalGeral)}</b><small>Quantidade × valor unitário</small></div>
+      </div>
+      <div className="row-inline" style={{ justifyContent: "space-between" }}>
+        <span className="hint">Clique num contrato para ver os itens, marcas, ata, contrato e vigência.</span>
+        <input className="input" style={{ maxWidth: 280 }} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar órgão, número, ata ou objeto" aria-label="Buscar contratos" />
+      </div>
+      {variasEmpresas && (
+        <div className="chips">
+          {[["todas", "Todas as empresas"], ...empresas.map((e) => [e.id, nomeCurto(e)]), ["sem", "Sem empresa"]].map(([k, l]) => (
+            <button key={k} className={`chip${emp === k ? " on" : ""}`} onClick={() => setEmp(k)}>{l}</button>
+          ))}
+        </div>
+      )}
+      {gan === null ? <div className="card empty">Carregando…</div> : !lista.length ? (
+        <div className="card empty"><b>Nenhum contrato ainda</b>Quando a empresa vencer itens de um processo, ele aparece aqui sozinho.</div>
+      ) : (
+        <div className="pgrid">
+          {lista.map((c) => {
+            const marcas = [...new Set(c.itens.map((i) => i.marca).filter(Boolean))];
+            return (
+              <div key={c.id} className="pcard" role="button" tabIndex={0} onClick={() => setSel(c.id)} onKeyDown={(e) => e.key === "Enter" && setSel(c.id)}>
+                <div className="ptop"><div style={{ minWidth: 0 }}><div className="porg">{c.p.orgao || "Órgão"}</div><div className="hint">{[c.p.municipio, c.p.numero && `Nº ${c.p.numero}`].filter(Boolean).join(" · ")}</div></div></div>
+                <div className="hint clamp2" style={{ color: "var(--ink-2)" }}>{c.p.objeto}</div>
+                <div className="row-inline"><span className="tag ok">🏆 {c.itens.length} item(ns)</span><ResultadoTag id={c.p.resultado} /><PortalTag k={c.p.portal} />{variasEmpresas && <span className="tag">{c.p.empresa_id ? nomeCurto(empDe(c.p.empresa_id)) : "Sem empresa"}</span>}</div>
+                <div className="acomp">
+                  <div className="row-inline" style={{ gap: 6 }}>
+                    <span className="tag">Total {brl(c.total)}</span>
+                    {c.ata.length > 0 && <span className="tag">Ata {c.ata.join(", ")}</span>}
+                    {c.contrato.length > 0 && <span className="tag">Contrato {c.contrato.join(", ")}</span>}
+                  </div>
+                  {marcas.length > 0 && <div className="pedido clamp2"><b>Marcas:</b> {marcas.slice(0, 6).join(", ")}{marcas.length > 6 ? "…" : ""}</div>}
+                </div>
+                <div className="estado">
+                  {c.vigFim ? <>Vigência até <b>{fmtData(c.vigFim + "T12:00:00")}</b></> : "Vigência não informada"}
+                  {c.p.data_sessao && <div className="hint">Sessão {fmtDH(c.p.data_sessao)}</div>}
+                </div>
+                <div className="row-inline"><span className="hint">Responsável: {nomeDe(c.p.responsavel)}</span></div>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
