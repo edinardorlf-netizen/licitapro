@@ -8,6 +8,8 @@
 // Só leitura: não envia proposta, lance nem mensagem.
 //
 //   ?tarefa=sincronizar (agendador, com chave)   |   { acao: "sincronizar", empresa_id? } (app)
+//   ?tarefa=historico&ano=2026 (agendador)       |   { acao: "historico", ano } (app)
+//     → todas as participações do ano, inclusive finalizadas, com marca, lance e colocação por item
 // =====================================================================
 import { createClient } from "npm:@supabase/supabase-js@2.49.4";
 import { Sessao, PCP_OP, lerSeusProcessos, lerAcessoRapido, urlSuasPropostas, caminhoPublico, type ProcPortal } from "./pcp.ts";
@@ -25,35 +27,123 @@ const ENCERRADO = /finalizad|cancelad|revogad|anulad|desert|fracassad/i;
 const ORDEM: Record<string, number> = { analise: 0, participar: 1, proposta: 2 };
 
 // Dentro da sala do processo, aba "Itens com proposta enviada pelo fornecedor" (param=10).
-// Devolve os números dos itens em que ESTE login enviou proposta (null = não deu para conferir).
+// Devolve os itens em que ESTE login enviou proposta: nº do item → link da "Colocação dos
+// Participantes" daquele item (onde aparecem lance e marca de cada fornecedor). null = não deu para conferir.
 let ultimoDiag = "";
-async function itensComProposta(s: Sessao, codigo: number, deadline: number): Promise<number[] | null> {
+async function itensComProposta(s: Sessao, codigo: number, deadline: number): Promise<Map<number, string> | null> {
   const salaUrl = `${PCP_OP}/4/SessaoPublica/?ttCD_CHAVE=${codigo}`;
   const sala = await s.texto(salaUrl);
   ultimoDiag = `sala→${sala.url.replace(PCP_OP, "")} (${sala.status}, ${sala.html.length}b)`;
-  const itens = new Set<number>();
-  let total: number | null = null;
-  for (let pg = 1; pg <= 50; pg++) {
+  const itens = new Map<number, string>();
+  for (let pg = 1; pg <= 60; pg++) {
     if (pg > 1 && Date.now() > deadline - 20000) return null;
     const { html, status, url } = await s.texto(`${PCP_OP}/4/SessaoPublica/lances/htmlAba.asp?param=10`, {
       method: "POST",
       body: `param=10&ttCD_LICITACAO=${codigo}&ttPagina=${pg}&ttPaginaItemLote=1`,
       extra: { Referer: salaUrl, Origin: PCP_OP, "X-Requested-With": "XMLHttpRequest", Accept: "text/html, */*; q=0.01" },
     });
-    const t = html.match(/Total de Registros:\s*(\d+)/i);
-    if (!t) {
-      ultimoDiag += ` · aba→${url.replace(PCP_OP, "")} (${status}): ${html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 160)}`;
-      return pg === 1 ? null : [...itens];
-    }
-    total = Number(t[1]);
+    let novos = 0;
     for (const tr of html.split(/<tr[\s>]/i).slice(1)) {
       const td = tr.match(/<td[^>]*>([\s\S]*?)<\/td>/i);
       const n = td ? td[1].replace(/<[^>]+>/g, "").trim() : "";
-      if (/^\d{1,5}$/.test(n)) itens.add(Number(n));
+      if (!/^\d{1,5}$/.test(n) || itens.has(Number(n))) continue;
+      const rk = (tr.match(/href="(\/4\/SessaoPublica\/RankingItem\/\?[^"]+)"/i) || [])[1];
+      itens.set(Number(n), rk ? rk.replace(/&amp;/g, "&") : "");
+      novos++;
     }
-    if (total === 0 || itens.size >= total) break;
+    const t = html.replace(/<[^>]+>/g, " ").match(/Total de Registros:?\s*(\d+)/i);
+    if (pg === 1 && !novos && !/Descri/i.test(html)) {
+      // Sem a tabela de itens: sala indisponível
+      ultimoDiag += ` · aba→${url.replace(PCP_OP, "")} (${status}): ${html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 160)}`;
+      return null;
+    }
+    if (!novos || (t && itens.size >= Number(t[1]))) break;
   }
-  return [...itens];
+  return itens;
+}
+
+// "Colocação dos Participantes" de um item: Fornecedor | CPF/CNPJ | Lance | Marca/Fabricante | Observações
+const limpaTd = (h: string) => h.replace(/<[^>]+>/g, " ").replace(/&amp;/g, "&").replace(/&nbsp;/g, " ").replace(/\s+/g, " ").trim();
+const numBR = (t: string) => { const v = Number(t.replace(/[^\d,.-]/g, "").replace(/\./g, "").replace(",", ".")); return Number.isFinite(v) ? v : null; };
+async function lerRanking(s: Sessao, codigo: number, url: string, cnpj: string) {
+  const { html } = await s.texto(PCP_OP + url, { extra: { Referer: `${PCP_OP}/4/SessaoPublica/?ttCD_CHAVE=${codigo}` } });
+  const linhas: string[][] = [];
+  for (const tr of html.split(/<tr[\s>]/i).slice(1)) {
+    const tds = [...tr.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/gi)].map((m) => limpaTd(m[1]));
+    if (tds.length >= 4 && /\d{2,3}\.?\d{3}\.?\d{3}/.test(tds[1])) linhas.push(tds);
+  }
+  if (!/Marca/i.test(html) || !linhas.length) return null;
+  const i = linhas.findIndex((l) => l[1].replace(/\D/g, "") === cnpj);
+  if (i < 0) return { achou: false, participantes: linhas.length } as const;
+  return { achou: true, marca: linhas[i][3] || "", lance: numBR(linhas[i][2]), posicao: i + 1, participantes: linhas.length } as const;
+}
+
+// Busca marca, lance e colocação da empresa nos itens que ainda não têm (para quando o tempo acaba no meio).
+// Devolve true quando todos os itens foram lidos.
+async function marcasDoProcesso(s: Sessao, procId: string, codigo: number, mapa: Map<number, string>, cnpj: string, deadline: number) {
+  const { data: atuais } = await db.from("itens").select("numero,marca,marca_ofertada").eq("processo_id", procId);
+  const porNum = new Map((atuais || []).map((i: any) => [Number(i.numero), i]));
+  let feitos = 0;
+  for (const [n, url] of mapa) {
+    const at: any = porNum.get(n);
+    if (at && at.marca_ofertada !== null && at.marca_ofertada !== undefined) continue;
+    if (!url) continue;
+    if (Date.now() > deadline - 15000) return { completo: false, feitos };
+    const r = await lerRanking(s, codigo, url, cnpj);
+    const chave = Number((url.match(/ttCD_CHAVE=(\d+)/) || [])[1] || 0) || null;
+    const linha: Record<string, unknown> = { processo_id: procId, numero: n, participar: true, pcp_item_chave: chave };
+    if (r && r.achou) {
+      Object.assign(linha, { marca_ofertada: r.marca, nosso_lance: r.lance, nossa_posicao: r.posicao, participantes: r.participantes });
+      if (!at || !at.marca) linha.marca = r.marca || null;
+    } else {
+      // Sem a linha da empresa (ex.: proposta desclassificada antes da disputa): marca como lido
+      Object.assign(linha, { marca_ofertada: "", participantes: r ? r.participantes : null });
+    }
+    await db.from("itens").upsert(linha, { onConflict: "processo_id,numero" });
+    feitos++;
+  }
+  return { completo: true, feitos };
+}
+
+async function cnpjDaEmpresa(empresaId: string | null) {
+  if (!empresaId) return "";
+  const { data } = await db.from("empresas").select("cnpj").eq("id", empresaId).maybeSingle();
+  return String(data?.cnpj || "").replace(/\D/g, "");
+}
+
+// Cadastra no LicitaPro um processo da área do fornecedor.
+async function cadastrarDoPortal(s: Sessao, x: ProcPortal, a: any, criadoPor: string, titulo: string, qtdItens: number) {
+  const dados = await s.texto(`${PCP_OP}/4/Pregoes/DadosPregao/?slA=Edit&ttCD_CHAVE=${x.codigo}`);
+  const caminho = caminhoPublico(dados.html);
+  const link = caminho ? `https://www.portaldecompraspublicas.com.br/processos/${caminho}` : null;
+  let edital: any = null;
+  if (caminho) {
+    const { data } = await db.from("editais").select("*").ilike("link_origem", `%${caminho}%`).limit(1);
+    edital = data && data[0];
+  }
+  const novo = {
+    edital_id: edital?.id || null,
+    controle_pncp: edital?.controle_pncp || null,
+    cnpj: edital?.cnpj || null, ano: edital?.ano || null, seq: edital?.seq || null,
+    pcp_path: caminho, pcp_codigo: x.codigo, portal: "pcp", link_origem: link,
+    orgao: edital?.orgao || x.orgao || null, municipio: edital?.municipio || null,
+    numero: (x.numero || "").split(" ")[0] || null, objeto: x.objeto || edital?.objeto || null,
+    modalidade: edital?.modalidade || null, valor_estimado: edital?.valor_estimado ?? null,
+    data_sessao: x.abertura, empresa_id: a.empresa_id, etapa: "proposta",
+    etapa_motivo: "A proposta da empresa aparece em “Suas Propostas” no portal.",
+    created_by: criadoPor, proxima_verificacao: new Date().toISOString(),
+  };
+  const { data: criado, error } = await db.from("processos").insert(novo).select("id,orgao,numero,data_sessao").single();
+  if (error) {
+    if (/duplicate|unique/i.test(error.message)) {
+      const { data: ex } = await db.from("processos").select("id,orgao,numero,data_sessao").eq("pcp_codigo", x.codigo).maybeSingle();
+      return { proc: ex, novo: false };
+    }
+    throw new Error(`Erro ao cadastrar ${x.numero}: ${error.message}`);
+  }
+  if (edital) await db.from("editais").update({ status: "acompanhando" }).eq("id", edital.id);
+  await db.from("movimentacoes").insert({ processo_id: criado.id, fonte: "sistema", tipo: "cadastro", titulo, detalhe: `Login ${a.usuario} · proposta em ${qtdItens} item(ns)`, autor: "robô", ocorrido_em: new Date().toISOString(), chave: "cadastro" });
+  return { proc: criado, novo: true };
 }
 
 async function sincronizarAcesso(a: any, deadline: number, quem: string) {
@@ -61,6 +151,7 @@ async function sincronizarAcesso(a: any, deadline: number, quem: string) {
   const { data: senha, error: eS } = await db.rpc("senha_acesso", { p_id: a.id });
   if (eS || !senha) throw new Error("A senha desse acesso não está guardada. Cadastre de novo em Ajustes → Empresas.");
 
+  const cnpj = await cnpjDaEmpresa(a.empresa_id);
   const s = new Sessao();
   try {
     await s.entrar(a.usuario, String(senha));
@@ -106,7 +197,7 @@ async function sincronizarAcesso(a: any, deadline: number, quem: string) {
         r.ignorados++;
         continue;
       }
-      if (!itens.length) {
+      if (!itens.size) {
         r.semProposta.push(nome);
         r.ignorados++;
         // Cadastrado antes pelo robô, sem anotação da equipe e sem estrela: sai do acompanhamento
@@ -117,7 +208,7 @@ async function sincronizarAcesso(a: any, deadline: number, quem: string) {
         continue;
       }
       // Marca como "Vamos disputar" os itens com proposta deste login
-      const marcar = itens.map((n) => ({ processo_id: "", numero: n, participar: true }));
+      const marcar = [...itens.keys()].map((n) => ({ processo_id: "", numero: n, participar: true }));
 
       if (ja) {
         for (let i = 0; i < marcar.length; i += 300) {
@@ -129,40 +220,18 @@ async function sincronizarAcesso(a: any, deadline: number, quem: string) {
           await db.from("processos").update({ etapa: "proposta", etapa_motivo: "A proposta da empresa aparece em “Suas Propostas” no portal." }).eq("id", ja.id);
           await db.from("movimentacoes").upsert({ processo_id: ja.id, fonte: "sistema", tipo: "etapa", titulo: "Etapa: Proposta enviada (automático)", detalhe: "A proposta da empresa apareceu no portal.", autor: "robô", ocorrido_em: new Date().toISOString(), importante: true, chave: "etapa-proposta" }, { onConflict: "processo_id,chave", ignoreDuplicates: true });
         }
+        // Marca ofertada, lance e colocação nos itens
+        await marcasDoProcesso(s, ja.id, x.codigo, itens, cnpj, deadline);
         continue;
       }
       if (r.novos.length >= 25) { r.aviso = "Ficaram processos para a próxima rodada."; break; }
 
-      const dados = await s.texto(`${PCP_OP}/4/Pregoes/DadosPregao/?slA=Edit&ttCD_CHAVE=${x.codigo}`);
-      const caminho = caminhoPublico(dados.html);
-      const link = caminho ? `https://www.portaldecompraspublicas.com.br/processos/${caminho}` : null;
-      let edital: any = null;
-      if (caminho) {
-        const { data } = await db.from("editais").select("*").ilike("link_origem", `%${caminho}%`).limit(1);
-        edital = data && data[0];
-      }
-      const novo = {
-        edital_id: edital?.id || null,
-        controle_pncp: edital?.controle_pncp || null,
-        cnpj: edital?.cnpj || null, ano: edital?.ano || null, seq: edital?.seq || null,
-        pcp_path: caminho, pcp_codigo: x.codigo, portal: "pcp", link_origem: link,
-        orgao: edital?.orgao || x.orgao || null, municipio: edital?.municipio || null,
-        numero: (x.numero || "").split(" ")[0] || null, objeto: x.objeto || edital?.objeto || null,
-        modalidade: edital?.modalidade || null, valor_estimado: edital?.valor_estimado ?? null,
-        data_sessao: x.abertura, empresa_id: a.empresa_id, etapa: "proposta",
-        etapa_motivo: "A proposta da empresa aparece em “Suas Propostas” no portal.",
-        created_by: `robô · Acesso Rápido (${quem})`, proxima_verificacao: new Date().toISOString(),
-      };
-      const { data: criado, error } = await db.from("processos").insert(novo).select("id,orgao,numero,data_sessao").single();
-      if (error) {
-        if (/duplicate|unique/i.test(error.message)) { r.ja++; continue; }
-        throw new Error(`Erro ao cadastrar ${x.numero}: ${error.message}`);
-      }
+      const { proc: criado } = await cadastrarDoPortal(s, x, a, `robô · Acesso Rápido (${quem})`, "Processo puxado do “Acesso Rápido” do portal (proposta enviada)", itens.size);
+      if (!criado) { r.ja++; continue; }
       for (let i = 0; i < marcar.length; i += 300) {
         await db.from("itens").upsert(marcar.slice(i, i + 300).map((m) => ({ ...m, processo_id: criado.id })), { onConflict: "processo_id,numero" });
       }
-      if (edital) await db.from("editais").update({ status: "acompanhando" }).eq("id", edital.id);
-      await db.from("movimentacoes").insert({ processo_id: criado.id, fonte: "sistema", tipo: "cadastro", titulo: "Processo puxado do “Acesso Rápido” do portal (proposta enviada)", detalhe: `Login ${a.usuario} · proposta em ${itens.length} item(ns)`, autor: "robô", ocorrido_em: new Date().toISOString(), chave: "cadastro" });
+      await marcasDoProcesso(s, criado.id, x.codigo, itens, cnpj, deadline);
       r.novos.push(criado);
     }
   } finally {
@@ -192,6 +261,114 @@ async function sincronizar(empresaId: string | undefined, deadline: number, quem
   return { resultados };
 }
 
+// ---------- Participações do ano (inclusive processos já finalizados) ----------
+// Lê "Suas Propostas" até o começo do ano, cadastra os processos com proposta da empresa
+// e busca, item por item, a marca ofertada, o lance final e a colocação. O resultado (quem venceu)
+// vem depois, quando o robô de acompanhamento lê o histórico do chat de cada processo.
+// Feito em partes: cada chamada continua de onde a anterior parou.
+async function historicoAcesso(a: any, ano: number, deadline: number, quem: string) {
+  const r = { ano, noAno: 0, novos: 0, completos: 0, pendentes: 0, semProposta: 0, naoConferidos: [] as string[], itensLidos: 0 };
+  const { data: senha, error: eS } = await db.rpc("senha_acesso", { p_id: a.id });
+  if (eS || !senha) throw new Error("A senha desse acesso não está guardada. Cadastre de novo em Ajustes → Empresas.");
+  const cnpj = await cnpjDaEmpresa(a.empresa_id);
+  const ignorar = new Set<number>((a.hist_ignorar || []).map(Number));
+  const s = new Sessao();
+  try {
+    await s.entrar(a.usuario, String(senha));
+    const doAno: ProcPortal[] = [];
+    for (let pg = 1; pg <= 40; pg++) {
+      const { html } = await s.texto(urlSuasPropostas(pg));
+      const linhas = lerSeusProcessos(html);
+      for (const x of linhas) if (x.abertura && Number(x.abertura.slice(0, 4)) === ano) doAno.push(x);
+      if (linhas.length < 10) break;
+      if (linhas.every((x) => x.abertura && Number(x.abertura.slice(0, 4)) < ano)) break;
+    }
+    r.noAno = doAno.length;
+    const { data: existentes } = doAno.length
+      ? await db.from("processos").select("id,pcp_codigo,marcas_ok").in("pcp_codigo", doAno.map((x) => x.codigo))
+      : { data: [] as any[] };
+    const porCodigo = new Map((existentes || []).map((p: any) => [Number(p.pcp_codigo), p]));
+    const novosIgnorar: number[] = [];
+    for (const x of doAno) {
+      const ja: any = porCodigo.get(x.codigo);
+      if (ignorar.has(x.codigo)) { r.semProposta++; continue; }
+      if (ja && ja.marcas_ok) { r.completos++; continue; }
+      if (Date.now() > deadline - 25000) { r.pendentes++; continue; }
+      const nome = `${(x.orgao || "").slice(0, 60)} ${x.numero ? "Nº " + x.numero.split(" ")[0] : ""}`.trim();
+      const itens = await itensComProposta(s, x.codigo, deadline);
+      if (itens === null) { r.naoConferidos.push(`${nome} [${ultimoDiag}]`); continue; }
+      if (!itens.size) { r.semProposta++; novosIgnorar.push(x.codigo); continue; }
+      let procId = ja?.id;
+      if (!procId) {
+        const c = await cadastrarDoPortal(s, x, a, `robô · Participações ${ano} (${quem})`, `Processo de ${ano} puxado de “Suas Propostas” do portal`, itens.size);
+        procId = c.proc?.id;
+        if (!procId) continue;
+        if (c.novo) r.novos++;
+      }
+      const linhas = [...itens.keys()].map((n) => ({ processo_id: procId, numero: n, participar: true }));
+      for (let i = 0; i < linhas.length; i += 300) await db.from("itens").upsert(linhas.slice(i, i + 300), { onConflict: "processo_id,numero" });
+      const m = await marcasDoProcesso(s, procId, x.codigo, itens, cnpj, deadline);
+      r.itensLidos += m.feitos;
+      if (m.completo) { await db.from("processos").update({ marcas_ok: true }).eq("id", procId); r.completos++; }
+      else r.pendentes++;
+    }
+    if (novosIgnorar.length) await db.from("acessos").update({ hist_ignorar: [...ignorar, ...novosIgnorar] }).eq("id", a.id);
+  } finally {
+    await s.sair();
+  }
+  return r;
+}
+
+async function historico(ano: number, empresaId: string | undefined, deadline: number, quem: string) {
+  let q = db.from("acessos").select("id,empresa_id,portal,usuario,senha_id,hist_ignorar").not("senha_id", "is", null).eq("portal", "pcp");
+  if (empresaId) q = q.eq("empresa_id", empresaId);
+  const { data: acessos } = await q;
+  if (!acessos || !acessos.length) throw new Error("Não há login do Portal de Compras Públicas guardado. Cadastre em Ajustes → Empresas e acessos.");
+  const resultados: any[] = [];
+  for (const a of acessos) {
+    if (Date.now() > deadline - 30000) break;
+    try {
+      const r = await historicoAcesso(a, ano, deadline, quem);
+      const msg = r.pendentes || r.naoConferidos.length
+        ? `${ano}: ${r.completos} de ${r.noAno - r.semProposta} processos com proposta lidos; continuando…`
+        : `${ano}: ${r.completos} processos com proposta, todos lidos (marca, lance e colocação).`;
+      await db.from("acessos").update({ hist_em: new Date().toISOString(), hist_msg: msg }).eq("id", a.id);
+      resultados.push(r);
+    } catch (e) {
+      const msg = String((e as Error).message || e);
+      await db.from("acessos").update({ hist_em: new Date().toISOString(), hist_msg: msg.slice(0, 300) }).eq("id", a.id);
+      resultados.push({ erro: msg });
+    }
+  }
+  return { resultados };
+}
+
+// Diagnóstico (temporário): abre páginas do portal com o login da empresa, para achar onde fica a marca ofertada.
+async function diagnostico(codigo: number, caminhos: string[], pub: string[]) {
+  const out: Record<string, unknown> = {};
+  const txt = (h: string) => h.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/gi, " ").replace(/<\/t[dh]>/gi, " | ").replace(/<\/tr>/gi, "\n").replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/[ \t]+/g, " ").replace(/\n\s+/g, "\n").trim();
+  for (const p of pub) {
+    const r = await fetch(`https://compras.api.portaldecompraspublicas.com.br${p}`, { headers: { Accept: "application/json" } });
+    out[`pub ${p}`] = `${r.status} ${(await r.text()).slice(0, 2500)}`;
+  }
+  if (!caminhos.length) return out;
+  const { data: a } = await db.from("acessos").select("id,usuario").eq("portal", "pcp").not("senha_id", "is", null).limit(1).single();
+  const { data: senha } = await db.rpc("senha_acesso", { p_id: a!.id });
+  const s = new Sessao();
+  try {
+    await s.entrar(a!.usuario, String(senha));
+    const salaUrl = `${PCP_OP}/4/SessaoPublica/?ttCD_CHAVE=${codigo}`;
+    await s.texto(salaUrl);
+    for (const c of caminhos) {
+      if (!c.startsWith("/") || c.includes("//") || /logout|senha|alterar|excluir|enviar|salvar/i.test(c)) continue;
+      const r = await s.texto(PCP_OP + c, { extra: { Referer: salaUrl } });
+      out[c] = `${r.status} ${r.url.replace(PCP_OP, "")} :: ${txt(r.html).slice(0, 2500)}`;
+      out[c + " links"] = [...new Set([...r.html.matchAll(/(?:href|action|onclick)="([^"#]{6,200})"/gi)].map((m) => m[1]))].filter((l) => !/\.(css|js|png|gif|ico|jpg)/i.test(l)).slice(0, 30);
+    }
+  } finally { await s.sair(); }
+  return out;
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
   const deadline = Date.now() + 110_000;
@@ -200,6 +377,11 @@ Deno.serve(async (req) => {
     if (tarefa) {
       const { data: seg } = await db.from("segredos").select("valor").eq("chave", "cron").maybeSingle();
       if (!seg || (req.headers.get("x-cron-key") || "") !== seg.valor) return json({ erro: "não autorizado" }, 401);
+      if (tarefa === "diag") {
+        const b = await req.json().catch(() => ({}));
+        return json(await diagnostico(Number(b.codigo || 0), Array.isArray(b.caminhos) ? b.caminhos.map(String) : [], Array.isArray(b.pub) ? b.pub.map(String) : []));
+      }
+      if (tarefa === "historico") return json(await historico(Number(new URL(req.url).searchParams.get("ano") || new Date().getFullYear()), undefined, deadline, "automático"));
       return json(await sincronizar(undefined, deadline, "automático"));
     }
     const token = (req.headers.get("Authorization") || "").replace(/^Bearer\s+/i, "");
@@ -211,6 +393,10 @@ Deno.serve(async (req) => {
     if (membro.papel === "acompanha") return json({ erro: "Seu perfil só acompanha disputas." }, 403);
     const body = await req.json().catch(() => ({}));
     const emp = typeof body.empresa_id === "string" && /^[0-9a-f-]{36}$/i.test(body.empresa_id) ? body.empresa_id : undefined;
+    if (body.acao === "historico") {
+      const ano = Number(body.ano) >= 2020 && Number(body.ano) <= 2100 ? Number(body.ano) : new Date().getFullYear();
+      return json(await historico(ano, emp, deadline, email.split("@")[0]));
+    }
     return json(await sincronizar(emp, deadline, email.split("@")[0]));
   } catch (e) {
     return json({ erro: String((e as Error).message || e) }, 500);

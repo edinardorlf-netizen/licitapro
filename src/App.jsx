@@ -1655,7 +1655,9 @@ function Item({ it, pode, notify, onSaved, ganho, onGanho }) {
         {(it.situacao_portal || it.situacao) && <span>Situação: <b>{it.situacao_portal || it.situacao}</b></span>}
         {lance != null && <span>Melhor lance: <b>{brl(lance)}</b></span>}
         {vm != null && <span>Nosso mínimo: <b style={{ color: "var(--accent-ink)" }}>{brl(vm)}</b></span>}
-        {it.marca && <span>Marca: <b>{it.marca}</b></span>}
+        {it.marca_ofertada ? <span>Marca ofertada: <b>{it.marca_ofertada}</b></span> : it.marca && <span>Marca: <b>{it.marca}</b></span>}
+        {it.nosso_lance != null && <span>Nosso lance: <b>{brl(it.nosso_lance)}</b></span>}
+        {it.nossa_posicao != null && <span>Colocação: <b>{it.nossa_posicao}º{it.participantes ? ` de ${it.participantes}` : ""}</b></span>}
       </div>
       {(it.vencedor_portal || it.arrematante || it.resultado_fornecedor) && (
         <div className="item-meta">
@@ -1907,6 +1909,7 @@ function Acessos({ empresa, acessos, admin, notify, recarregar }) {
                     {a.sinc_em ? `${a.sinc_ok ? "✓" : "⚠"} Última leitura do “Acesso Rápido” ${fmtDH(a.sinc_em)}: ${a.sinc_msg || ""}` : "Ainda não puxou processos com esse login"}
                   </span>
                 )}
+                {a.portal === "pcp" && a.hist_em && <span className="ls">📚 Participações · {fmtDH(a.hist_em)}: {a.hist_msg}</span>}
               </div>
               {admin && (
                 <div className="row-inline" style={{ flexWrap: "nowrap" }}>
