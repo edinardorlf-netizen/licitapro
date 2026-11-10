@@ -266,7 +266,7 @@ async function sincronizar(empresaId: string | undefined, deadline: number, quem
 // e busca, item por item, a marca ofertada, o lance final e a colocação. O resultado (quem venceu)
 // vem depois, quando o robô de acompanhamento lê o histórico do chat de cada processo.
 // Feito em partes: cada chamada continua de onde a anterior parou.
-async function historicoAcesso(a: any, ano: number, deadline: number, quem: string) {
+async function historicoAcesso(a: any, ano: number, deadline: number, quem: string, desde = "") {
   const r = { ano, noAno: 0, novos: 0, completos: 0, pendentes: 0, semProposta: 0, naoConferidos: [] as string[], itensLidos: 0 };
   const { data: senha, error: eS } = await db.rpc("senha_acesso", { p_id: a.id });
   if (eS || !senha) throw new Error("A senha desse acesso não está guardada. Cadastre de novo em Ajustes → Empresas.");
@@ -279,7 +279,7 @@ async function historicoAcesso(a: any, ano: number, deadline: number, quem: stri
     for (let pg = 1; pg <= 40; pg++) {
       const { html } = await s.texto(urlSuasPropostas(pg));
       const linhas = lerSeusProcessos(html);
-      for (const x of linhas) if (x.abertura && Number(x.abertura.slice(0, 4)) === ano) doAno.push(x);
+      for (const x of linhas) if (x.abertura && Number(x.abertura.slice(0, 4)) === ano && (!desde || x.abertura.slice(0, 10) >= desde)) doAno.push(x);
       if (linhas.length < 10) break;
       if (linhas.every((x) => x.abertura && Number(x.abertura.slice(0, 4)) < ano)) break;
     }
@@ -319,7 +319,7 @@ async function historicoAcesso(a: any, ano: number, deadline: number, quem: stri
   return r;
 }
 
-async function historico(ano: number, empresaId: string | undefined, deadline: number, quem: string) {
+async function historico(ano: number, empresaId: string | undefined, deadline: number, quem: string, desde = "") {
   let q = db.from("acessos").select("id,empresa_id,portal,usuario,senha_id,hist_ignorar").not("senha_id", "is", null).eq("portal", "pcp");
   if (empresaId) q = q.eq("empresa_id", empresaId);
   const { data: acessos } = await q;
@@ -328,7 +328,7 @@ async function historico(ano: number, empresaId: string | undefined, deadline: n
   for (const a of acessos) {
     if (Date.now() > deadline - 30000) break;
     try {
-      const r = await historicoAcesso(a, ano, deadline, quem);
+      const r = await historicoAcesso(a, ano, deadline, quem, desde);
       const msg = r.pendentes || r.naoConferidos.length
         ? `${ano}: ${r.completos} de ${r.noAno - r.semProposta} processos com proposta lidos; continuando…`
         : `${ano}: ${r.completos} processos com proposta, todos lidos (marca, lance e colocação).`;
@@ -343,32 +343,6 @@ async function historico(ano: number, empresaId: string | undefined, deadline: n
   return { resultados };
 }
 
-// Diagnóstico (temporário): abre páginas do portal com o login da empresa, para achar onde fica a marca ofertada.
-async function diagnostico(codigo: number, caminhos: string[], pub: string[]) {
-  const out: Record<string, unknown> = {};
-  const txt = (h: string) => h.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/gi, " ").replace(/<\/t[dh]>/gi, " | ").replace(/<\/tr>/gi, "\n").replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/[ \t]+/g, " ").replace(/\n\s+/g, "\n").trim();
-  for (const p of pub) {
-    const r = await fetch(`https://compras.api.portaldecompraspublicas.com.br${p}`, { headers: { Accept: "application/json" } });
-    out[`pub ${p}`] = `${r.status} ${(await r.text()).slice(0, 2500)}`;
-  }
-  if (!caminhos.length) return out;
-  const { data: a } = await db.from("acessos").select("id,usuario").eq("portal", "pcp").not("senha_id", "is", null).limit(1).single();
-  const { data: senha } = await db.rpc("senha_acesso", { p_id: a!.id });
-  const s = new Sessao();
-  try {
-    await s.entrar(a!.usuario, String(senha));
-    const salaUrl = `${PCP_OP}/4/SessaoPublica/?ttCD_CHAVE=${codigo}`;
-    await s.texto(salaUrl);
-    for (const c of caminhos) {
-      if (!c.startsWith("/") || c.includes("//") || /logout|senha|alterar|excluir|enviar|salvar/i.test(c)) continue;
-      const r = await s.texto(PCP_OP + c, { extra: { Referer: salaUrl } });
-      out[c] = `${r.status} ${r.url.replace(PCP_OP, "")} :: ${txt(r.html).slice(0, 2500)}`;
-      out[c + " links"] = [...new Set([...r.html.matchAll(/(?:href|action|onclick)="([^"#]{6,200})"/gi)].map((m) => m[1]))].filter((l) => !/\.(css|js|png|gif|ico|jpg)/i.test(l)).slice(0, 30);
-    }
-  } finally { await s.sair(); }
-  return out;
-}
-
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
   const deadline = Date.now() + 110_000;
@@ -377,11 +351,7 @@ Deno.serve(async (req) => {
     if (tarefa) {
       const { data: seg } = await db.from("segredos").select("valor").eq("chave", "cron").maybeSingle();
       if (!seg || (req.headers.get("x-cron-key") || "") !== seg.valor) return json({ erro: "não autorizado" }, 401);
-      if (tarefa === "diag") {
-        const b = await req.json().catch(() => ({}));
-        return json(await diagnostico(Number(b.codigo || 0), Array.isArray(b.caminhos) ? b.caminhos.map(String) : [], Array.isArray(b.pub) ? b.pub.map(String) : []));
-      }
-      if (tarefa === "historico") return json(await historico(Number(new URL(req.url).searchParams.get("ano") || new Date().getFullYear()), undefined, deadline, "automático"));
+      if (tarefa === "historico") return json(await historico(Number(new URL(req.url).searchParams.get("ano") || new Date().getFullYear()), undefined, deadline, "automático", new URL(req.url).searchParams.get("desde") || ""));
       return json(await sincronizar(undefined, deadline, "automático"));
     }
     const token = (req.headers.get("Authorization") || "").replace(/^Bearer\s+/i, "");
@@ -395,7 +365,7 @@ Deno.serve(async (req) => {
     const emp = typeof body.empresa_id === "string" && /^[0-9a-f-]{36}$/i.test(body.empresa_id) ? body.empresa_id : undefined;
     if (body.acao === "historico") {
       const ano = Number(body.ano) >= 2020 && Number(body.ano) <= 2100 ? Number(body.ano) : new Date().getFullYear();
-      return json(await historico(ano, emp, deadline, email.split("@")[0]));
+      return json(await historico(ano, emp, deadline, email.split("@")[0], String(body.desde || "")));
     }
     return json(await sincronizar(emp, deadline, email.split("@")[0]));
   } catch (e) {
