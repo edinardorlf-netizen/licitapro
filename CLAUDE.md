@@ -25,6 +25,15 @@ Leia isto primeiro. É a passagem de bastão da conversa no claude.ai para o Cla
 4. Pendências antigas: Compras.gov.br, BLL, Licitações-e; resultados do pregão de Taiobeiras 52/2025; itens vencidos nos processos Mirafarma; buscas diárias nos 3 boletins do ConLicitação (3 por dia; foco inicial retroativo 19–28/10/2026 e depois só o dia atual).
 5. Padrão para todo edital recebido: resumo de pontos críticos (Lei 14.133/2021, incluindo o site de cadastro da proposta) + planilha de itens no modelo da licitação de Várzea da Palma (PE 039/2026). Nome do arquivo da planilha sem "itens cotados".
 
+## Pedidos do dono para a próxima etapa (18:11, 11/11/2026)
+1. **Planilha de cotação:** ao marcar os itens que a empresa disputa, gerar um Excel (.xlsx) por processo com os itens (nº, descrição, unidade, quantidade, valor de referência) e colunas vazias para preencher preço unitário e total.
+2. **Entrada da cotação:** tela para enviar a planilha preenchida de volta; o app lê os preços unitários e totais por item e guarda no processo. Conferir total = unidade × quantidade e avisar divergências.
+3. **Valor mínimo manual:** remover o cálculo automático do valor mínimo (custo, frete, impostos, margem). O valor mínimo (piso) de cada item passa a ser **digitado à mão**; sem piso o robô não dá lance. A cotação enviada pode sugerir o valor, mas quem confirma é o usuário.
+4. **Proposta ajustada pós-disputa:** depois da disputa, gerar a proposta (Excel e/ou PDF) só com os **itens vencidos**, com os valores finais (resultado do lance) e o valor total, pronta para enviar no sistema do portal.
+5. **Vários processos ao mesmo tempo:** o robô deve poder rodar em mais de um processo simultâneo, cada um com suas configurações e itens.
+6. **Botão Parar por item:** além do botão geral, cada item tem o seu Parar (e Retomar), que interrompe só os lances daquele item.
+7. **Erros de conexão visíveis:** qualquer erro durante a disputa (internet, queda do login, portal fora do ar, captcha) aparece como mensagem no app, com horário e o item afetado, e o robô para ou espera com segurança. Nunca falhar em silêncio.
+
 ## Como o robô deve ser construído
 - Programa independente (Node) que roda no desktop da farmácia **sem o Claude Code aberto**, no mesmo padrão do robô de WhatsApp (`zap-robo`): atalhos INICIAR e PARAR, log, atualização automática por versão publicada no banco.
 - Fala com o mesmo banco do LicitaPro: lê quais disputas estão ligadas, piso e estratégia de cada item; grava cada decisão com o motivo. O app (notebook ou outro computador da equipe) mostra ao vivo e tem o botão Parar.
