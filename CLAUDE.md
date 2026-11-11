@@ -36,6 +36,8 @@ Leia isto primeiro. É a passagem de bastão da conversa no claude.ai para o Cla
 6. **Botão Parar por item:** além do botão geral, cada item tem o seu Parar (e Retomar), que interrompe só os lances daquele item.
 7. **Erros de conexão visíveis:** qualquer erro durante a disputa (internet, queda do login, portal fora do ar, captcha) aparece como mensagem no app, com horário e o item afetado, e o robô para ou espera com segurança. Nunca falhar em silêncio.
 
+8. **Proposta inicial (para assinar e enviar com os documentos):** usar o mesmo modelo Word da proposta ajustada. Ao enviar a planilha de cotação com os itens que a empresa vai disputar, o app oferece o botão "Gerar proposta" → Word com os mesmos dados fixos, o órgão/pregão/processo do processo cadastrado e a tabela com **todos os itens cotados** (preços unitários e totais da planilha, marca e Anvisa), total e total por extenso, data e assinatura. O título deve ser "PROPOSTA" (e "PROPOSTA AJUSTADA" só na versão pós-disputa) — confirmar com o dono.
+
 ## Como o robô deve ser construído
 - Programa independente (Node) que roda no desktop da farmácia **sem o Claude Code aberto**, no mesmo padrão do robô de WhatsApp (`zap-robo`): atalhos INICIAR e PARAR, log, atualização automática por versão publicada no banco.
 - Fala com o mesmo banco do LicitaPro: lê quais disputas estão ligadas, piso e estratégia de cada item; grava cada decisão com o motivo. O app (notebook ou outro computador da equipe) mostra ao vivo e tem o botão Parar.
