@@ -36,7 +36,15 @@ Leia isto primeiro. É a passagem de bastão da conversa no claude.ai para o Cla
 6. **Botão Parar por item:** além do botão geral, cada item tem o seu Parar (e Retomar), que interrompe só os lances daquele item.
 7. **Erros de conexão visíveis:** qualquer erro durante a disputa (internet, queda do login, portal fora do ar, captcha) aparece como mensagem no app, com horário e o item afetado, e o robô para ou espera com segurança. Nunca falhar em silêncio.
 
-8. **Proposta inicial (para assinar e enviar com os documentos):** usar o mesmo modelo Word da proposta ajustada. Ao enviar a planilha de cotação com os itens que a empresa vai disputar, o app oferece o botão "Gerar proposta" → Word com os mesmos dados fixos, o órgão/pregão/processo do processo cadastrado e a tabela com **todos os itens cotados** (preços unitários e totais da planilha, marca e Anvisa), total e total por extenso, data e assinatura. O título deve ser "PROPOSTA" (e "PROPOSTA AJUSTADA" só na versão pós-disputa) — confirmar com o dono.
+8. **Proposta inicial (para assinar e enviar com os documentos):** usar o mesmo modelo Word da proposta ajustada. Ao enviar a planilha de cotação com os itens que a empresa vai disputar, o app oferece o botão "Gerar proposta" → Word com os mesmos dados fixos, o órgão/pregão/processo do processo cadastrado e a tabela com **todos os itens cotados** (preços unitários e totais da planilha, marca e Anvisa), total e total por extenso, data e assinatura. Título "PROPOSTA" (confirmado pelo dono).
+
+9. **Colunas opcionais na proposta:** o dono escolhe o que aparece na proposta Word (Marca, Registro ANVISA, Unidade etc.), porque nem todo edital exige (ex.: sem ANVISA, a coluna some). Padrão: tudo ligado; opções guardadas por processo.
+10. **Planilha modelo recebida (Excel, `Pregão_039-2026.xlsx`, PE 039/2026, fica em `modelos/`, fora do git):** é o padrão da empresa, com 3 abas:
+   - *Planilha de Lançamento* (linha 5 = cabeçalho; itens a partir da linha 6): Item, Participação (ex.: EXCLUSIVO ME/EPP/MEI), Descrição (resumo do TR), Qtd, Unid., Valor Unitário (R$), Valor total (R$), Marca, Custo unit. (R$), Lance mínimo (R$), Vencido? (S/N), Valor vencido (R$), Reg. ANVISA, Obs. / exigência especial, Observações. No modelo o valor unitário e o lance mínimo são fórmulas (custo × markup); **no LicitaPro o valor mínimo passa a ser digitado à mão** (item 3).
+   - *Proposta Ajustada*: lista só os itens com Vencido = S (Item, Descrição, Quantidade, Unidade, Valor unitário, Valor total, Marca, Reg. ANVISA) com um seletor "Incluir registro ANVISA? Sim/Não" — é daí que vem o pedido de colunas opcionais.
+   - *Documentos*: checklist de documentos do edital (proposta, habilitação jurídica, econômico-financeira, regularidade fiscal e trabalhista…), com item do edital, status, validade e observação.
+   O LicitaPro deve gerar e ler esse mesmo formato (importar os itens do edital para a aba de lançamento; ler os preços preenchidos; marcar vencidos depois da disputa).
+11. Títulos: proposta inicial = "PROPOSTA"; versão pós-disputa = "PROPOSTA AJUSTADA".
 
 ## Como o robô deve ser construído
 - Programa independente (Node) que roda no desktop da farmácia **sem o Claude Code aberto**, no mesmo padrão do robô de WhatsApp (`zap-robo`): atalhos INICIAR e PARAR, log, atualização automática por versão publicada no banco.
