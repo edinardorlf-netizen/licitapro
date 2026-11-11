@@ -25,6 +25,13 @@ Leia isto primeiro. É a passagem de bastão da conversa no claude.ai para o Cla
 4. Pendências antigas: Compras.gov.br, BLL, Licitações-e; resultados do pregão de Taiobeiras 52/2025; itens vencidos nos processos Mirafarma; buscas diárias nos 3 boletins do ConLicitação (3 por dia; foco inicial retroativo 19–28/10/2026 e depois só o dia atual).
 5. Padrão para todo edital recebido: resumo de pontos críticos (Lei 14.133/2021, incluindo o site de cadastro da proposta) + planilha de itens no modelo da licitação de Várzea da Palma (PE 039/2026). Nome do arquivo da planilha sem "itens cotados".
 
+## Como o robô deve ser construído
+- Programa independente (Node) que roda no desktop da farmácia **sem o Claude Code aberto**, no mesmo padrão do robô de WhatsApp (`zap-robo`): atalhos INICIAR e PARAR, log, atualização automática por versão publicada no banco.
+- Fala com o mesmo banco do LicitaPro: lê quais disputas estão ligadas, piso e estratégia de cada item; grava cada decisão com o motivo. O app (notebook ou outro computador da equipe) mostra ao vivo e tem o botão Parar.
+- Usa navegador controlado pelo programa (Playwright). Login da empresa vem do cofre, nunca de arquivo. Captcha, sessão derrubada ou erro: o robô **para e avisa** no app; nunca tenta contornar.
+- Começa em modo observar. As travas do `robo.js` ficam dentro do programa, mesmo sem o Claude Code.
+- Cuidado: o mesmo login em dois lugares pode derrubar a sessão do portal; acompanhar pelo app do LicitaPro, não pelo portal.
+
 ## Regras de trabalho
 - **Segredos:** logins e senhas dos portais e chaves nunca entram no código, no git nem no chat. Ficam no cofre do Supabase (tabela `segredos`/`acessos`, `senha_id`) ou em variáveis de ambiente no computador. Não repita senhas em respostas.
 - Nunca resolver captcha nem contornar bloqueio de portal; se aparecer, o dono resolve. Conferir os termos de uso do portal antes de automatizar lance.
