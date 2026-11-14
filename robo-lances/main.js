@@ -18,7 +18,12 @@ import { decidir, CONFIG_PADRAO } from "./cerebro.js";
 import * as portal from "./portal.js";
 import { preencherProposta } from "./proposta.js";
 
-export const VERSAO = 2;
+export const VERSAO = 3;
+// v3 (14/11): lê no máximo LEITURAS_JUNTAS processos ao mesmo tempo, espalha as leituras de 5 em 5 min
+// (antes, ao ligar com 69 disputas, saíam ~140 pedidos no mesmo segundo e o portal respondia 405)
+// e, se o portal limitar o acesso, segura as leituras fora de sessão por 2 minutos.
+const LEITURAS_JUNTAS = 3;
+let pausaGeralAte = 0;
 const AQUI = path.dirname(fileURLToPath(import.meta.url));
 const FLAG = path.join(AQUI, "PARAR.flag");
 const cfg = Object.fromEntries(
@@ -80,7 +85,8 @@ let ctxNav = null;           // navegador (Playwright)
 let statusTxt = "iniciando";
 
 function sala(pid) {
-  if (!salas.has(pid)) salas.set(pid, { lidoEm: 0, okEm: 0, itens: new Map(), arrem: new Map(), chatVisto: new Set(), decisoes: new Map(), situacoesNovas: new Set(), aba: null, conferidaEm: 0, capturas: 0, capturaEm: 0, problema: null, citadas: new Set() });
+  // lidoEm inicial sorteado: as primeiras leituras dos processos fora de sessão se espalham pelos 5 minutos
+  if (!salas.has(pid)) salas.set(pid, { lidoEm: Date.now() - Math.random() * 300000, okEm: 0, itens: new Map(), arrem: new Map(), chatVisto: new Set(), decisoes: new Map(), situacoesNovas: new Set(), aba: null, conferidaEm: 0, capturas: 0, capturaEm: 0, problema: null, citadas: new Set() });
   return salas.get(pid);
 }
 
@@ -115,6 +121,7 @@ async function lerDisputa(d) {
   // Fora da sessão: a cada 5 min (a nuvem também acompanha a cada 2 min). Na sessão: a cada 3 s.
   const intervalo = s.bloqueioAte && Date.now() < s.bloqueioAte ? 30000 : quente(d, s) ? 3000 : 300000;
   if (Date.now() - s.lidoEm < intervalo) return;
+  if (!quente(d, s) && Date.now() < pausaGeralAte) return; // portal pediu calma: só a sessão em andamento continua
   s.lidoEm = Date.now();
   const ident = portal.identificacao(d.empresa);
   try {
@@ -147,7 +154,7 @@ async function lerDisputa(d) {
     }
     s.chatIniciado = true; // mensagens antigas (de antes do robô ligar) não tocam alerta
   } catch (e) {
-    if (e.tipo === "bloqueio") s.bloqueioAte = Date.now() + 5 * 60e3;
+    if (e.tipo === "bloqueio") { s.bloqueioAte = Date.now() + 5 * 60e3; pausaGeralAte = Date.now() + 2 * 60e3; }
     s.problema = e.message;
     erro(`ler-${d.processo_id}`, `${d.orgao || ""} ${d.numero || ""}: ${e.message}`.trim(), { processo_id: d.processo_id });
   }
@@ -368,7 +375,11 @@ async function ligado() {
     for (const pid of [...salas.keys()]) if (!disputas.some((d) => d.processo_id === pid)) {
       const s = salas.get(pid); try { if (s.aba) await s.aba.close(); } catch { /* */ } salas.delete(pid);
     }
-    await Promise.all(disputas.map((d) => lerDisputa(d).catch((e) => erro(`ler-${d.processo_id}`, e.message, { processo_id: d.processo_id }))));
+    // Fila com no máximo LEITURAS_JUNTAS leituras simultâneas; sessões em andamento primeiro
+    const aLer = [...disputas].sort((a, b) => (quente(b, sala(b.processo_id)) ? 1 : 0) - (quente(a, sala(a.processo_id)) ? 1 : 0));
+    await Promise.all(Array.from({ length: Math.min(LEITURAS_JUNTAS, aLer.length) }, async () => {
+      for (let d; (d = aLer.shift()); ) await lerDisputa(d).catch((e) => erro(`ler-${d.processo_id}`, e.message, { processo_id: d.processo_id }));
+    }));
     await cuidarDoNavegador(disputas).catch((e) => erro("nav", e.message));
     if (ultimoPulso?.pedidos?.length) await atenderPedidos(ultimoPulso.pedidos);
     if (n % 2 === 0) { await enviarEventos(); await enviarVerificacoes(); }

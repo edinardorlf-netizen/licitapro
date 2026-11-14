@@ -766,3 +766,10 @@ create policy "admin altera modelos" on public.modelos_documentos for all using 
 -- Por processo: nº do processo licitatório (≠ nº do pregão) e opções da proposta ({"colunas": {"anvisa": bool, "obs": bool}})
 alter table public.processos add column if not exists numero_processo text;
 alter table public.processos add column if not exists proposta_opcoes jsonb not null default '{}'::jsonb;
+
+-- =====================================================================
+-- Migração robo_arquivos_admin_publica (14/11/2026): o administrador publica versões novas do robô de lances
+-- (o robô baixa sozinho pelo licita-robo "arquivos" quando versao_publicada > VERSAO dele)
+-- =====================================================================
+grant select, insert, update, delete on public.robo_arquivos to authenticated;
+create policy "admin publica versao do robo" on public.robo_arquivos for all to authenticated using (is_admin()) with check (is_admin());

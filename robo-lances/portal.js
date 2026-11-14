@@ -37,7 +37,8 @@ async function getJsonSemLimite(url) {
     throw new ErroPortal(`Sem resposta do portal (${e.name === "TimeoutError" ? "demorou demais" : "sem internet ou portal fora do ar"}).`, "internet");
   }
   if (r.status === 204 || r.status === 404) return null;
-  if (r.status === 429 || r.status === 403) throw new ErroPortal(`O portal limitou o acesso automático (código ${r.status}). O robô vai ler mais devagar; não contorna bloqueio.`, "bloqueio");
+  // 405 apareceu quando o robô pediu dezenas de processos de uma vez (14/11): o portal trata como excesso de acesso
+  if (r.status === 429 || r.status === 403 || r.status === 405) throw new ErroPortal(`O portal limitou o acesso automático (código ${r.status}). O robô vai ler mais devagar; não contorna bloqueio.`, "bloqueio");
   if (!r.ok) throw new ErroPortal(`O portal respondeu com erro ${r.status}.`, "portal");
   const t = await r.text();
   try { return t ? JSON.parse(t) : null; } catch { throw new ErroPortal("O portal devolveu uma resposta inesperada.", "portal"); }
