@@ -821,3 +821,11 @@ create index if not exists ordem_itens_ganho_idx on public.ordem_itens (ganho_id
 -- function ordem_itens_saldo() (security definer): recalcula itens_ganhos.quantidade_entregue do item afetado
 -- trigger ordem_itens_saldo after insert or update or delete on ordem_itens
 -- RLS: ver = is_equipe() and tem_perm('contratos'); lançar/apagar = pode_editar() and tem_perm('contratos')
+-- =====================================================================
+-- Migração unificar_produto_palavras (14/11/2026) · Produtos por palavras-chave
+-- unificar_produto(p_nome, p_chave, p_unidade, p_itens uuid[], p_ganhos uuid[]) returns uuid
+--   p_chave = 'REGRA:PALAVRAS|SEM:…|TAM:M|EMB:EMB-CX' (gravada em produtos.chaves; itens novos que
+--   batem com a regra entram sozinhos no produto, pelo agrupamento do app em src/produtos.js).
+--   Acha/cria o produto da regra, move os itens escolhidos, leva os custos dos produtos que
+--   ficaram vazios e apaga esses produtos vazios. Permissão: pode_editar() and tem_perm('catalogo').
+-- =====================================================================

@@ -9,7 +9,8 @@
 // =====================================================================
 import React, { useState, useEffect, useMemo } from "react";
 import { sb, brl, num, parseNum, fmtIn, fmtData, errMsg } from "./util.js";
-import { agrupar, diasDesde, DIAS_CUSTO_VELHO, markup } from "./produtos.js";
+import { agrupar, diasDesde, DIAS_CUSTO_VELHO, markup, lerRegra } from "./produtos.js";
+import UnificarProdutos from "./UnificarProdutos.jsx";
 import { carregarProdutos, carregarCustos, carregarGanhos, carregarItensNossos } from "./dados.js";
 
 const pct = (v) => (v == null ? "—" : `${v.toLocaleString("pt-BR", { maximumFractionDigits: 1 })}%`);
@@ -58,7 +59,7 @@ export default function Catalogo({ ctx }) {
     try {
       const [produtos, ganhos, itens, custos] = await Promise.all([carregarProdutos(), carregarGanhos(), carregarItensNossos(), verCusto ? carregarCustos() : Promise.resolve([])]);
       setDados({ produtos, ganhos, itens, custos });
-      return { produtos, ganhos, itens };
+      return { produtos, ganhos, itens, custos };
     } catch (e) { setErro(errMsg(e)); return null; }
   };
 
@@ -68,7 +69,9 @@ export default function Catalogo({ ctx }) {
     const soltosI = d.itens.filter((i) => !i.produto_id);
     const soltosG = d.ganhos.filter((i) => !i.produto_id);
     if (!soltosI.length && !soltosG.length) return;
-    const grupos = agrupar(soltosI, soltosG);
+    // regras de palavras-chave gravadas nos produtos têm prioridade
+    const regras = d.produtos.flatMap((p) => (p.chaves || []).map(lerRegra).filter(Boolean).map((r) => ({ ...r, nome: p.nome })));
+    const grupos = agrupar(soltosI, soltosG, regras);
     try {
       for (let i = 0; i < grupos.length; i += 150) {
         setAgrupando(`Agrupando itens parecidos… ${Math.min(i + 150, grupos.length)} de ${grupos.length} grupos`);
@@ -184,6 +187,7 @@ export default function Catalogo({ ctx }) {
               <input className="input" style={{ maxWidth: 260 }} value={q} onChange={(e) => { setQ(e.target.value); setLimite(100); }} placeholder="Buscar produto ou marca" aria-label="Buscar produto" />
             </div>
           </div>
+          <UnificarProdutos dados={dados} podeCat={podeCat} notify={notify} onFeito={carregar} />
           {podeCat && sel.length > 0 && (
             <div className="banner info" style={{ justifyContent: "space-between" }}>
               <span>{sel.length} produto(s) selecionado(s). Juntar quando forem a mesma coisa com descrições diferentes.</span>

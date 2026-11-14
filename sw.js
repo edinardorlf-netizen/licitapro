@@ -1,5 +1,5 @@
-/* LicitaPro Â· arquivos do site com rede primeiro (sempre a versÃ£o nova), cache sÃ³ sem internet. */
-const CACHE = "licitapro-v22";
+/* LicitaPro Ã‚Â· arquivos do site com rede primeiro (sempre a versÃƒÂ£o nova), cache sÃƒÂ³ sem internet. */
+const CACHE = "licitapro-v23";
 const CORE = ["./", "index.html", "app.js", "config.js", "manifest.webmanifest", "icons/icon-192.png"];
 self.addEventListener("install", (e) => { e.waitUntil(caches.open(CACHE).then((c) => c.addAll(CORE)).then(() => self.skipWaiting())); });
 self.addEventListener("activate", (e) => {
@@ -17,7 +17,7 @@ self.addEventListener("fetch", (e) => {
   );
 });
 
-/* NotificaÃ§Ãµes do robÃ´ (aparecem no Windows/celular mesmo com o LicitaPro fechado) */
+/* NotificaÃƒÂ§ÃƒÂµes do robÃƒÂ´ (aparecem no Windows/celular mesmo com o LicitaPro fechado) */
 self.addEventListener("push", (e) => {
   let d = {};
   try { d = e.data ? e.data.json() : {}; } catch (_) { d = { titulo: "LicitaPro", corpo: e.data ? e.data.text() : "" }; }

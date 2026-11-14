@@ -102,11 +102,79 @@ export function chaveProduto(desc, unidade) {
   return { chave, nome: nome || String(desc || "Produto").slice(0, 60) };
 }
 
-/** Agrupa listas de itens e itens ganhos pela chave. Devolve [{ chave, nome, unidade, itens:[ids], ganhos:[ids] }]. */
-export function agrupar(itens = [], ganhos = []) {
+// ---------------------------------------------------------------------
+// Unificar por palavras-chave (pedido do dono, 14/11/2026)
+// Ex.: "luva procedimento latex" junta todas as luvas de procedimento de látex,
+// separando só por tamanho (PP/P/M/G…, ou 6,5/7,0… nas cirúrgicas) e embalagem
+// (caixa ≠ unidade, porque o preço não é comparável). A regra fica gravada no
+// produto (chave "REGRA:palavras|SEM:…|TAM:M|EMB:CX") e itens novos que batem
+// com ela entram sozinhos no mesmo produto.
+// ---------------------------------------------------------------------
+const norm = (s) => semAcento(s).toUpperCase().replace(/[\t\r\n]+/g, " ");
+export const palavrasDe = (s) => norm(s).replace(/[^A-Z0-9? ]+/g, " ").split(/\s+/).filter((w) => w.length > 1 && !PARADAS.has(w));
+const casa = (tok, kw) => tok.startsWith(kw) || (tok.includes("?") && esqueleto(tok).startsWith(esqueleto(kw)) && tok.length >= kw.length - 1);
+/** A descrição tem todas as palavras de `kws` e nenhuma de `sem`? */
+export function palavrasBatem(desc, kws, sem = []) {
+  const toks = norm(desc).replace(/[^A-Z0-9? ]+/g, " ").split(/\s+/).filter(Boolean);
+  return kws.every((k) => toks.some((t) => casa(t, k))) && !sem.some((k) => toks.some((t) => casa(t, k)));
+}
+
+const TAM_PAL = [[/\bEXTRA\s*PEQUEN[OA]\b/, "PP"], [/\bEXTRA\s*GRANDE\b/, "GG"], [/\bPEQUEN[OA]\b/, "P"], [/\bMEDI[O]\b/, "M"], [/\bGRANDE\b/, "G"]];
+const tamNum = (s) => { const v = Number(s.replace(",", ".")); return v.toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 }); };
+/** Tamanho do item (PP, P, M, G, GG, XG, EG, 6,5, 7,0…). "VÁRIOS" se a descrição citar mais de um; null se nenhum. */
+export function tamanho(desc) {
+  const t = norm(desc).slice(0, 400);
+  const achou = new Set();
+  const letra = (x) => achou.add(x.replace(/^EXG$/, "EG").replace(/^XGG$/, "XGG"));
+  let m;
+  const r1 = /\b(?:TAMANHO|TAM)\b\.?\s*(?:N\s*[O°º?]?\.?\s*)?:?\s*(PP|XGG|XG|GG|EXG|EG|P|M|G|\d{1,2}(?:[.,]\d)?)(?![A-Z0-9])/g;
+  while ((m = r1.exec(t))) /^\d/.test(m[1]) ? achou.add(tamNum(m[1])) : letra(m[1]);
+  const r2 = /\bN\s*[O°º?]\s*\.?\s*([5-9][.,][05])(?!\d)/g;
+  while ((m = r2.exec(t))) achou.add(tamNum(m[1]));
+  const r3 = /(?<![\d,]\s?)(?<!\d\.)\b([5-9][.,][05])(?!\d)(?!\s*(?:ML|MG|MCG|G\b|GR|KG|CM|MM|M\b|MT|L\b|LT|%|X|UI))/g;
+  if (!achou.size) while ((m = r3.exec(t))) achou.add(tamNum(m[1]));
+  TAM_PAL.forEach(([re, v]) => { if (re.test(t)) achou.add(v); });
+  const r4 = /(?<!\d\s?)(?:^|[\s(,-])(PP|XGG|XG|GG|EG|P|M|G)(?=$|[\s),.;:-])/g;
+  while ((m = r4.exec(t))) letra(m[1]);
+  if (!achou.size) return null;
+  return achou.size > 1 ? "VÁRIOS" : [...achou][0];
+}
+export const embalagemDe = (unidade) => embalagem(unidade) || "UN";
+export const NOME_EMB = { "EMB-CX": "caixa", "EMB-PCT": "pacote", "EMB-GL": "galão", UN: "unidade" };
+
+/** Chave gravada no produto para uma regra de palavras-chave. */
+export const chaveRegra = ({ palavras, sem, tam, emb }) => ["REGRA:" + palavras.join(" "), sem.length ? "SEM:" + sem.join(" ") : null, "TAM:" + (tam || "-"), "EMB:" + emb].filter(Boolean).join("|");
+export function lerRegra(ch) {
+  if (!String(ch).startsWith("REGRA:")) return null;
+  const r = { palavras: [], sem: [], tam: null, emb: "UN", chave: ch };
+  ch.split("|").forEach((p) => {
+    const [k, ...v] = p.split(":"); const val = v.join(":");
+    if (k === "REGRA") r.palavras = val.split(" ").filter(Boolean);
+    else if (k === "SEM") r.sem = val.split(" ").filter(Boolean);
+    else if (k === "TAM") r.tam = val === "-" ? null : val;
+    else if (k === "EMB") r.emb = val;
+  });
+  return r.palavras.length ? r : null;
+}
+/** Regra (das gravadas nos produtos) que vale para esta descrição, ou null. A mais específica ganha. */
+export function regraDe(desc, unidade, regras) {
+  if (!regras || !regras.length) return null;
+  let tam, emb;
+  const cand = regras.filter((r) => {
+    if (!palavrasBatem(desc, r.palavras, r.sem)) return false;
+    if (tam === undefined) { tam = tamanho(desc); emb = embalagemDe(unidade); }
+    return (r.tam || null) === tam && r.emb === emb;
+  });
+  return cand.sort((a, b) => b.palavras.length - a.palavras.length)[0] || null;
+}
+
+/** Agrupa listas de itens e itens ganhos pela chave. Devolve [{ chave, nome, unidade, itens:[ids], ganhos:[ids] }].
+ *  `regras` = [{ chave, palavras, sem, tam, emb, nome }] (das palavras-chave gravadas): têm prioridade. */
+export function agrupar(itens = [], ganhos = [], regras = []) {
   const g = new Map();
   const pega = (desc, unidade) => {
-    const k = chaveProduto(desc, unidade);
+    const r = regraDe(desc, unidade, regras);
+    const k = r ? { chave: r.chave, nome: r.nome } : chaveProduto(desc, unidade);
     if (!g.has(k.chave)) g.set(k.chave, { chave: k.chave, nome: k.nome, unidades: {}, itens: [], ganhos: [] });
     return g.get(k.chave);
   };
