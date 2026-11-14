@@ -1,0 +1,11 @@
+{
+  "name": "licitapro-robo-lances",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "LicitaPro: robô de lances local do Portal de Compras Públicas (versão só observar).",
+  "main": "main.js",
+  "dependencies": {
+    "playwright-core": "1.64.1"
+  }
+}

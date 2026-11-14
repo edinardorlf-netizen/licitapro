@@ -338,6 +338,20 @@ alter table public.processos add column if not exists empresa_id uuid references
 alter table public.processos add column if not exists pncp_checado_em timestamptz;
 create index if not exists processos_empresa_idx on public.processos (empresa_id);
 
+-- ---------- Cotação por item e valor mínimo manual (migração itens_cotacao_piso_manual, 11/11/2026) ----------
+-- O valor mínimo (valor_minimo = piso do robô) passa a ser digitado à mão; custo/frete/impostos/margem
+-- ficam só como histórico. A planilha de cotação enviada preenche preço, marca, Anvisa e uma sugestão de piso.
+alter table public.itens add column if not exists participacao text;
+alter table public.itens add column if not exists preco_unit numeric(16,4);
+alter table public.itens add column if not exists preco_total numeric(16,4);
+alter table public.itens add column if not exists anvisa text;
+alter table public.itens add column if not exists obs_exigencia text;
+alter table public.itens add column if not exists obs text;
+alter table public.itens add column if not exists piso_sugerido numeric(16,4);
+alter table public.itens add column if not exists cotacao_em timestamptz;
+alter table public.itens add column if not exists piso_por text;
+alter table public.itens add column if not exists piso_em timestamptz;
+
 alter table public.empresas enable row level security;
 alter table public.acessos enable row level security;
 drop policy if exists "ver empresas" on public.empresas;
@@ -469,3 +483,252 @@ alter table public.itens add column if not exists nosso_vence boolean not null d
 -- itens_ganhos: itens vencidos (base do controle de atas/contratos: qtd, preço, marca, ata, contrato,
 --               vigência, empenhado, entregue). Trigger registrar_item_ganho em itens quando nosso_vence.
 -- A função "licita" ficou só com acompanhar/cadastrar/verificar (radar → licita-radar; login → licita-sinc).
+
+-- =====================================================================
+-- Migração catalogo_markup_reequilibrio_permissoes (11/11/2026)
+-- Permissões por usuário (só o dono administra), catálogo de produtos com custos,
+-- markup mínimo e validade da proposta para o reequilíbrio.
+-- O e-mail do dono NÃO fica aqui (repositório público): é gravado direto no banco,
+-- em config.dono, com: update config set dono = '<e-mail do dono>' where id = 1;
+-- =====================================================================
+alter table public.config add column if not exists dono text;
+alter table public.config add column if not exists markup_minimo numeric(6,2) not null default 20;
+alter table public.equipe add column if not exists permissoes jsonb not null default '{}'::jsonb;
+-- equipe.permissoes: { radar, processos, contratos, catalogo, custos, reequilibrio, robo, editar } (true/false).
+-- Administrador (somente o dono) vê e altera tudo; os demais só o que estiver marcado.
+
+create or replace function public.is_admin()
+returns boolean language sql stable security definer set search_path = public as $$
+  select exists (
+    select 1 from equipe e, config c
+    where c.id = 1 and e.email = lower(coalesce(auth.jwt()->>'email', '')) and e.ativo and e.papel = 'admin'
+      and (c.dono is null or e.email = lower(c.dono))
+  );
+$$;
+
+create or replace function public.tem_perm(p text)
+returns boolean language sql stable security definer set search_path = public as $$
+  select public.is_admin() or exists (
+    select 1 from equipe e
+    where e.email = lower(coalesce(auth.jwt()->>'email', '')) and e.ativo
+      and coalesce((e.permissoes->>p)::boolean, false)
+  );
+$$;
+
+create or replace function public.pode_editar()
+returns boolean language sql stable set search_path = public as $$
+  select public.is_admin() or (coalesce(public.meu_papel() = 'equipe', false) and public.tem_perm('editar'));
+$$;
+
+create or replace function public.equipe_guarda()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare d text;
+begin
+  select lower(dono) into d from config where id = 1;
+  if new.papel = 'admin' and d is not null and lower(new.email) <> d then
+    raise exception 'Somente o dono do sistema pode ser administrador';
+  end if;
+  if tg_op = 'UPDATE' and d is not null and lower(old.email) = d and (new.papel <> 'admin' or not new.ativo or lower(new.email) <> d) then
+    raise exception 'O acesso do dono do sistema não pode ser alterado';
+  end if;
+  return new;
+end $$;
+drop trigger if exists equipe_guarda on public.equipe;
+create trigger equipe_guarda before insert or update on public.equipe for each row execute function public.equipe_guarda();
+revoke execute on function public.tem_perm(text) from public, anon;
+grant execute on function public.tem_perm(text) to authenticated;
+
+drop policy if exists "ver editais" on public.editais;
+create policy "ver editais" on public.editais for select to authenticated using (public.is_equipe() and public.tem_perm('radar'));
+drop policy if exists "ver processos" on public.processos;
+create policy "ver processos" on public.processos for select to authenticated
+  using (public.is_equipe() and (public.tem_perm('processos') or public.tem_perm('contratos') or public.tem_perm('reequilibrio')));
+drop policy if exists "ver itens" on public.itens;
+create policy "ver itens" on public.itens for select to authenticated
+  using (public.is_equipe() and (public.tem_perm('processos') or public.tem_perm('reequilibrio') or public.tem_perm('catalogo')));
+drop policy if exists "ver movimentacoes" on public.movimentacoes;
+create policy "ver movimentacoes" on public.movimentacoes for select to authenticated using (public.is_equipe() and public.tem_perm('processos'));
+drop policy if exists "ver itens ganhos" on public.itens_ganhos;
+create policy "ver itens ganhos" on public.itens_ganhos for select to authenticated
+  using (public.is_equipe() and (public.tem_perm('contratos') or public.tem_perm('processos') or public.tem_perm('reequilibrio') or public.tem_perm('catalogo')));
+-- pedidos_sala e resumo_acompanhando: o filtro is_equipe() passou a ser (is_equipe() and tem_perm('processos')).
+
+create table if not exists public.produtos (
+  id uuid primary key default gen_random_uuid(),
+  nome text not null check (char_length(trim(nome)) between 1 and 200),
+  unidade text,
+  chaves text[] not null default '{}',
+  custo_atual numeric(16,4), custo_marca text, custo_em timestamptz, custo_por text,
+  obs text,
+  criado_em timestamptz not null default now()
+);
+create index if not exists produtos_chaves_idx on public.produtos using gin (chaves);
+create table if not exists public.produto_custos (
+  id uuid primary key default gen_random_uuid(),
+  produto_id uuid not null references public.produtos(id) on delete cascade,
+  valor numeric(16,4) not null check (valor > 0),
+  marca text, fornecedor text,
+  anotado_em timestamptz not null default now(),
+  anotado_por text
+);
+create index if not exists produto_custos_prod_idx on public.produto_custos (produto_id, anotado_em desc);
+alter table public.itens add column if not exists produto_id uuid references public.produtos(id) on delete set null;
+alter table public.itens_ganhos add column if not exists produto_id uuid references public.produtos(id) on delete set null;
+alter table public.itens_ganhos add column if not exists custo_unit numeric(16,4);
+create index if not exists itens_produto_idx on public.itens (produto_id);
+create index if not exists itens_ganhos_produto_idx on public.itens_ganhos (produto_id);
+
+create or replace function public.produto_custo_atual()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare pid uuid := coalesce(new.produto_id, old.produto_id); u record;
+begin
+  select valor, marca, anotado_em, anotado_por into u from produto_custos where produto_id = pid order by anotado_em desc limit 1;
+  update produtos set custo_atual = u.valor, custo_marca = u.marca, custo_em = u.anotado_em, custo_por = u.anotado_por where id = pid;
+  return null;
+end $$;
+drop trigger if exists produto_custo_atual on public.produto_custos;
+create trigger produto_custo_atual after insert or delete on public.produto_custos for each row execute function public.produto_custo_atual();
+
+alter table public.produtos enable row level security;
+alter table public.produto_custos enable row level security;
+drop policy if exists "ver produtos" on public.produtos;
+create policy "ver produtos" on public.produtos for select to authenticated
+  using (public.is_equipe() and (public.tem_perm('catalogo') or public.tem_perm('reequilibrio') or public.tem_perm('custos')));
+drop policy if exists "editar produtos" on public.produtos;
+create policy "editar produtos" on public.produtos for all to authenticated
+  using (public.pode_editar() and public.tem_perm('catalogo')) with check (public.pode_editar() and public.tem_perm('catalogo'));
+drop policy if exists "ver custos" on public.produto_custos;
+create policy "ver custos" on public.produto_custos for select to authenticated using (public.is_equipe() and public.tem_perm('custos'));
+drop policy if exists "anotar custos" on public.produto_custos;
+create policy "anotar custos" on public.produto_custos for insert to authenticated
+  with check (public.pode_editar() and public.tem_perm('custos') and anotado_por = lower(auth.jwt()->>'email'));
+drop policy if exists "apagar custos" on public.produto_custos;
+create policy "apagar custos" on public.produto_custos for delete to authenticated using (public.pode_editar() and public.tem_perm('custos'));
+
+-- Grava o agrupamento automático feito no app (não mexe em itens já agrupados).
+-- p_grupos = [{ "chave", "nome", "unidade", "itens": [uuid], "ganhos": [uuid] }]
+create or replace function public.aplicar_agrupamento(p_grupos jsonb)
+returns int language plpgsql security definer set search_path = public as $$
+declare g jsonb; pid uuid; n int := 0;
+begin
+  if not (public.pode_editar() and public.tem_perm('catalogo')) then raise exception 'Sem permissão para o catálogo'; end if;
+  for g in select * from jsonb_array_elements(p_grupos) loop
+    select id into pid from produtos where chaves @> array[g->>'chave'] limit 1;
+    if pid is null then
+      insert into produtos (nome, unidade, chaves) values (left(g->>'nome', 200), g->>'unidade', array[g->>'chave']) returning id into pid;
+      n := n + 1;
+    end if;
+    update itens set produto_id = pid where produto_id is null and id in (select (jsonb_array_elements_text(coalesce(g->'itens', '[]'::jsonb)))::uuid);
+    update itens_ganhos set produto_id = pid where produto_id is null and id in (select (jsonb_array_elements_text(coalesce(g->'ganhos', '[]'::jsonb)))::uuid);
+  end loop;
+  return n;
+end $$;
+
+-- Junta produtos: itens, custos e chaves passam para p_para.
+create or replace function public.juntar_produtos(p_para uuid, p_de uuid[])
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  if not (public.pode_editar() and public.tem_perm('catalogo')) then raise exception 'Sem permissão para o catálogo'; end if;
+  p_de := array_remove(p_de, p_para);
+  update itens set produto_id = p_para where produto_id = any(p_de);
+  update itens_ganhos set produto_id = p_para where produto_id = any(p_de);
+  update produto_custos set produto_id = p_para where produto_id = any(p_de);
+  update produtos set chaves = (select array_agg(distinct c) from (select unnest(chaves) c from produtos where id = p_para or id = any(p_de)) s) where id = p_para;
+  delete from produtos where id = any(p_de);
+end $$;
+
+-- Tira um item (ou item ganho) do produto e cria um produto só com ele.
+create or replace function public.separar_item(p_item uuid, p_ganho uuid, p_nome text)
+returns uuid language plpgsql security definer set search_path = public as $$
+declare pid uuid;
+begin
+  if not (public.pode_editar() and public.tem_perm('catalogo')) then raise exception 'Sem permissão para o catálogo'; end if;
+  insert into produtos (nome) values (left(coalesce(nullif(trim(p_nome), ''), 'Produto'), 200)) returning id into pid;
+  if p_item is not null then update itens set produto_id = pid where id = p_item; end if;
+  if p_ganho is not null then update itens_ganhos set produto_id = pid where id = p_ganho; end if;
+  return pid;
+end $$;
+revoke execute on function public.aplicar_agrupamento(jsonb) from public, anon;
+revoke execute on function public.juntar_produtos(uuid, uuid[]) from public, anon;
+revoke execute on function public.separar_item(uuid, uuid, text) from public, anon;
+grant execute on function public.aplicar_agrupamento(jsonb) to authenticated;
+grant execute on function public.juntar_produtos(uuid, uuid[]) to authenticated;
+grant execute on function public.separar_item(uuid, uuid, text) to authenticated;
+
+alter table public.processos add column if not exists validade_dias int check (validade_dias between 1 and 730);
+alter table public.processos add column if not exists validade_fonte text; -- 'edital' | 'manual' | 'nao_encontrada'
+alter table public.processos add column if not exists validade_trecho text;
+alter table public.processos add column if not exists validade_checada_em timestamptz;
+
+-- =====================================================================
+-- Migração contratos_manuais (11/11/2026)
+-- Contratos, atas de registro de preços, empenhos, aditivos e apostilamentos
+-- lançados à mão (fonte 'manual') ou trazidos do PNCP / e-mail.
+-- =====================================================================
+create table if not exists public.contratos (
+  id uuid primary key default gen_random_uuid(),
+  empresa_id uuid references public.empresas(id) on delete set null,
+  processo_id uuid references public.processos(id) on delete set null,
+  pai_id uuid references public.contratos(id) on delete cascade, -- aditivo → contrato/ata original
+  tipo text not null check (tipo in ('ata', 'contrato', 'empenho', 'aditivo', 'apostilamento')),
+  aditivo_tipo text check (aditivo_tipo in ('prazo', 'valor', 'quantidade', 'reequilibrio', 'outro')),
+  numero text,
+  orgao text not null check (char_length(trim(orgao)) between 2 and 200),
+  municipio text,
+  pregao text,
+  objeto text,
+  data_assinatura date,
+  vigencia_inicio date,
+  vigencia_fim date,
+  valor numeric(16,2),
+  link text,
+  fonte text not null default 'manual' check (fonte in ('manual', 'pncp', 'email')),
+  pncp_controle text,
+  obs text,
+  criado_por text,
+  criado_em timestamptz not null default now(),
+  atualizado_em timestamptz not null default now(),
+  check (tipo <> 'aditivo' or pai_id is not null),
+  check (vigencia_fim is null or vigencia_inicio is null or vigencia_fim >= vigencia_inicio)
+);
+create index if not exists contratos_processo_idx on public.contratos (processo_id);
+create index if not exists contratos_pai_idx on public.contratos (pai_id);
+create index if not exists contratos_vig_idx on public.contratos (vigencia_fim);
+create unique index if not exists contratos_pncp_idx on public.contratos (pncp_controle) where pncp_controle is not null;
+alter table public.contratos enable row level security;
+drop policy if exists "ver contratos" on public.contratos;
+create policy "ver contratos" on public.contratos for select to authenticated
+  using (public.is_equipe() and (public.tem_perm('contratos') or public.tem_perm('reequilibrio')));
+drop policy if exists "lancar contratos" on public.contratos;
+create policy "lancar contratos" on public.contratos for insert to authenticated
+  with check (public.pode_editar() and public.tem_perm('contratos'));
+drop policy if exists "editar contratos" on public.contratos;
+create policy "editar contratos" on public.contratos for update to authenticated
+  using (public.pode_editar() and public.tem_perm('contratos')) with check (public.pode_editar() and public.tem_perm('contratos'));
+drop policy if exists "apagar contratos" on public.contratos;
+create policy "apagar contratos" on public.contratos for delete to authenticated
+  using (public.pode_editar() and public.tem_perm('contratos'));
+create or replace function public.contratos_tocar() returns trigger language plpgsql as $$
+begin new.atualizado_em := now(); return new; end $$;
+drop trigger if exists contratos_tocar on public.contratos;
+create trigger contratos_tocar before update on public.contratos for each row execute function public.contratos_tocar();
+
+-- =====================================================================
+-- Migração robo_lances_observar (13/11/2026)
+-- Robô de lances local (pasta robo-lances, roda no computador da empresa).
+-- Fase 1: SÓ OBSERVAR. robo_disputas.modo tem check (modo = 'observar'):
+-- liberar lance real exige nova migração, com autorização do dono.
+-- O robô fala com a função licita-robo (chave própria; no banco fica só o hash
+-- em segredos.robo_lances_hash). Senha do portal: cofre → senha_acesso().
+-- =====================================================================
+-- robo_disputas (processo_id pk, ligado, modo='observar', parado, config jsonb, criado_por, ...)
+-- robo_itens    (processo_id, numero, ativo, parado, estrategia cobrir|final|observar, lances_dados)
+--               piso = itens.valor_minimo (digitado à mão; sem piso o robô não lança)
+-- robo_eventos  (processo_id, numero, tipo decisao|erro|aviso|status|proposta|chat, acao, valor, motivo, dados)
+-- robo_estado   ('pcp': versao, sinal_em, status, mensagem, maquina, parado_geral)
+-- robo_pedidos  (processo_id, tipo 'proposta', status pendente|andamento|feito|erro, mensagem)
+-- robo_arquivos (nome, conteudo, versao)  -- atualização automática do programa; só service_role
+-- robo_capturas (processo_id, tipo, url, html) -- cópias de tela para calibrar o leitor; só service_role
+-- RLS: ver = is_equipe() and tem_perm('robo'); ligar/criar = pode_editar() and tem_perm('robo');
+--      parar (update parado/ativo/estrategia/config, parado_geral) = is_equipe() and tem_perm('robo').
+--      authenticated não altera robo_disputas.modo (grant por coluna).

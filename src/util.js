@@ -51,14 +51,33 @@ export const ACOMPANHANDO = ["disputa", "julgamento", "habilitacao", "recurso", 
 export const POS_VITORIA = ["ata", "execucao"];
 // Processos "vivos" (Início e Agenda)
 export const ATIVAS = ["analise", "participar", "proposta", "suspenso", ...ACOMPANHANDO];
-// Categorias da aba Processos (um processo pode aparecer em mais de uma: ex. ainda em habilitação e já com itens ganhos)
+// Fim do processo: homologado / finalizado no portal, com o vencedor de cada item declarado.
+// Assim que o robô vê isso, o processo sai de "Em finalização" e passa para "Finalizados" sozinho.
+const RE_FINAL = /finalizad|homologad|contrato|conclu[ií]d|encerrad/i;
+export const finalizado = (p) =>
+  POS_VITORIA.includes(p.etapa) || p.etapa === "concluido" ||
+  (p.etapa === "homologacao" && !!p.resultado && (p.valor_homologado != null || RE_FINAL.test(`${p.situacao_portal || ""} ${p.situacao_pncp || ""}`)));
+// Categorias da aba Processos: cada processo fica em uma só (exceto "Todos").
 export const CATEGORIAS = [
   { id: "vamos", nome: "⭐ Vamos participar", desc: "Proposta ainda a lançar", teste: (p) => A_LANCAR.includes(p.etapa) },
   { id: "proposta", nome: "📨 Proposta enviada", desc: "Aguardando a abertura da sessão (ou suspenso antes dela)", teste: (p) => p.etapa === "proposta" || (p.etapa === "suspenso" && !ACOMPANHANDO.includes(p.etapa_antes)) },
-  { id: "acompanhando", nome: "👁 Acompanhando", desc: "Sessão aberta: lances, julgamento, habilitação, recurso e homologação", teste: (p) => ACOMPANHANDO.includes(p.etapa) || (p.etapa === "suspenso" && ACOMPANHANDO.includes(p.etapa_antes)) },
-  { id: "ganhos", nome: "🏆 Ganhos / contratos", desc: "Processos com itens vencidos: ata, contrato, empenho e entrega", teste: (p) => ganhou(p) || POS_VITORIA.includes(p.etapa) },
-  { id: "perdidos", nome: "Perdidos / encerrados", desc: "", teste: (p) => p.etapa === "concluido" && !ganhou(p) },
+  { id: "acompanhando", nome: "👁 Em disputa", desc: "Sessão aberta: lances, julgamento, habilitação e recurso", teste: (p) => ["disputa", "julgamento", "habilitacao", "recurso"].includes(p.etapa) || (p.etapa === "suspenso" && ACOMPANHANDO.includes(p.etapa_antes)) },
+  { id: "finalizacao", nome: "⏳ Em finalização", desc: "Encaminhados para adjudicação / homologação, ainda sem o resultado final de todos os itens", teste: (p) => p.etapa === "homologacao" && !finalizado(p) },
+  { id: "ganhos", nome: "🏆 Finalizados com vitória", desc: "Homologados, com a empresa vencedora de itens: ata, contrato, empenho e entrega", teste: (p) => finalizado(p) && (ganhou(p) || POS_VITORIA.includes(p.etapa)) },
+  { id: "perdidos", nome: "Finalizados sem vitória", desc: "Homologados ou encerrados sem itens para a empresa", teste: (p) => finalizado(p) && !ganhou(p) && !POS_VITORIA.includes(p.etapa) },
   { id: "todos", nome: "Todos", desc: "", teste: () => true },
+];
+
+// Áreas que o administrador libera para cada pessoa (equipe.permissoes)
+export const PERMISSOES = [
+  { id: "radar", nome: "Radar de editais" },
+  { id: "processos", nome: "Processos, Início e Agenda" },
+  { id: "contratos", nome: "Contratos e itens ganhos" },
+  { id: "catalogo", nome: "Catálogo de produtos (preço médio de venda)" },
+  { id: "custos", nome: "Ver e lançar custos e markup" },
+  { id: "reequilibrio", nome: "Reequilíbrio de preços" },
+  { id: "robo", nome: "Robô de lances (simulador)" },
+  { id: "editar", nome: "Alterar dados (cadastrar, lançar preços, marcar itens)" },
 ];
 
 export const PAPEIS = {

@@ -1,0 +1,63 @@
+ROBÔ DE LANCES - LICITAPRO (Portal de Compras Públicas)
+VERSÃO SÓ OBSERVAR: acompanha as disputas e mostra no app o que faria. NÃO dá lance.
+
+INSTALAR NO DESKTOP (uma vez)
+  1) Leve o robo-lances-desktop.zip pelo AnyDesk (transferência de arquivos) ou pendrive.
+     NÃO mande por WhatsApp/e-mail: o config.env tem a chave do robô.
+  2) Extraia em qualquer lugar e dê dois cliques em robo-lances\INSTALAR.bat. Ele copia para
+     C:\LicitaPro\robo-lances, instala o Node.js se faltar (aí pede para rodar de novo),
+     deixa o computador sem suspender na tomada, coloca o robô para ligar com o Windows,
+     cria o vigia de 5 em 5 min e liga o robô em segundo plano (sem janela).
+  3) Se ainda não foi feito: rodar o cadastrar-chave.sql no Supabase (SQL Editor).
+  4) Dois cliques em TESTE-LOGIN.bat (opcional): abre o Edge, entra no portal e fecha em 20 s.
+     Se aparecer captcha ou código, resolva você na janela. O robô nunca contorna isso.
+
+NO DIA A DIA (não precisa fazer nada)
+  - O robô fica ligado o tempo todo, escondido. Liga sozinho quando o Windows inicia e
+    religa sozinho se cair.
+  - Acompanha TODOS os processos vigentes do Portal de Compras Públicas cadastrados no
+    LicitaPro (entram sozinhos). Fora da sessão lê a cada 5 min; perto e durante a sessão,
+    a cada 3 s. Quando vê mudança (chat, situação, lance), avisa o LicitaPro, que atualiza
+    o processo em até 2 minutos.
+  - Na hora da sessão dos processos em que temos proposta, abre a sala no Edge com o login
+    da empresa. Não feche essa janela durante a disputa e não entre com o mesmo login em
+    outro computador (o portal pode derrubar a sessão).
+  - Acompanhe tudo no LicitaPro: aba Robô > Ao vivo (no celular também).
+
+QUEDA DE ENERGIA
+  O desktop liga sozinho e entra direto no Windows. Aí o robô liga pelo atalho de início
+  e, de 5 em 5 minutos, um vigia (tarefa agendada "LicitaPro robo-lances (vigia)") confere
+  se ele está rodando e liga se não estiver.
+
+ATALHOS
+  PARAR.bat                      desliga e NÃO volta sozinho (nem reiniciando) até usar LIGAR.bat
+  LIGAR.bat                      liga de novo em segundo plano
+  INICIAR.bat                    liga com a janela preta aberta (para ver o que ele faz)
+  VER-LOG.bat                    abre o registro de hoje
+  REMOVER-INICIO-AUTOMATICO.bat  tira o início com o Windows e o vigia
+  node main.js calibrar <códigos> acompanha processos de outras empresas (dados públicos)
+
+PREENCHER PROPOSTA
+  Abra, no Edge do robô, a tela de cadastro da proposta do processo. No app, clique em
+  "Preencher proposta no portal". O robô digita preço, marca e Anvisa da cotação.
+  Ele NUNCA clica em Salvar/Enviar: confira e envie você.
+
+AVISO - REGULAMENTO DO PORTAL (lido em 13/11/2026, portaldecompraspublicas.com.br/regulamento)
+  Itens 5.3.1 e 6.7: proíbem robôs sem permissão expressa da ECUSTOMIZE (dona do portal).
+  6.7.2/7.7: o portal avisa antes de bloquear; se continuar, bloqueia o acesso (6.7.2.1/7.7.1).
+  15.2: pode cancelar o cadastro do fornecedor por descumprimento (sem prever aviso antes).
+  6.1: a empresa responde por todo lance feito com o login dela.
+  Decisão do dono (13/11): testar só observando e pedir autorização ao portal depois do teste.
+  Para desligar o login: troque USAR_LOGIN=sim por USAR_LOGIN=nao no config.env.
+
+ROTEIRO DO TESTE NA DISPUTA REAL
+  1) Antes: no processo, valor mínimo digitado nos itens (ou "Incluir todos os itens" no painel).
+  2) No app (Robô > Ao vivo) confira "● Robô ligado" e o processo na lista.
+  3) Durante a disputa, compare "O robô agora" com o que acontece na sala. Anote situações
+     novas (aviso amarelo), atrasos e itens em que ele não soube quem estava na frente.
+  4) Teste: Parar item, Parar processo, Parar tudo (vira "Parado" em segundos).
+  5) Teste um erro: tire a internet por 30 s. Deve aparecer ERRO e "Parado: sem dados".
+  6) Depois, mande o registro (VER-LOG.bat) para ajustar.
+
+ATUALIZAÇÃO
+  Quando uma versão nova é publicada no LicitaPro, o robô se atualiza e religa sozinho.

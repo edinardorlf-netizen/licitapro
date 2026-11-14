@@ -1,8 +1,30 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import Simulador from "./Simulador.jsx";
+import RoboAoVivo from "./RoboAoVivo.jsx";
+
+// Aba Robô: "Ao vivo" (robô local acompanhando disputas reais) e o simulador (só no computador).
+function RoboTela({ ctx }) {
+  const [sub, setSub] = useState("vivo");
+  return (
+    <div className="stack">
+      {!ctx.celular && (
+        <div className="seg" role="tablist" style={{ alignSelf: "flex-start" }}>
+          <button role="tab" aria-selected={sub === "vivo"} className={sub === "vivo" ? "on" : ""} onClick={() => setSub("vivo")}>Ao vivo</button>
+          <button role="tab" aria-selected={sub === "sim"} className={sub === "sim" ? "on" : ""} onClick={() => setSub("sim")}>Simulador</button>
+        </div>
+      )}
+      {sub === "sim" && !ctx.celular ? <Simulador ctx={ctx} /> : <RoboAoVivo ctx={ctx} />}
+    </div>
+  );
+}
+import CotacaoPainel from "./CotacaoPainel.jsx";
+import PropostaGrade from "./PropostaGrade.jsx";
+import Catalogo, { MarkupMinimo } from "./Catalogo.jsx";
+import Reequilibrio from "./Reequilibrio.jsx";
+import ContratosLancados from "./ContratosLancados.jsx";
 import {
-  sb, appUrl, portal, PORTAIS, ETAPAS, etapa, ATIVAS, A_LANCAR, ACOMPANHANDO, CATEGORIAS, RESULTADOS, resultado, ganhou, PAPEIS, fmtData, fmtDataCurta, fmtHora, fmtDH, diaChave, hojeChave,
-  diaLongo, falta, brl, num, parseNum, fmtIn, valorMinimo, errMsg, chamarRobo, iniciais,
+  sb, appUrl, portal, PORTAIS, ETAPAS, etapa, ATIVAS, A_LANCAR, ACOMPANHANDO, CATEGORIAS, RESULTADOS, resultado, ganhou, PAPEIS, PERMISSOES, fmtData, fmtDataCurta, fmtHora, fmtDH, diaChave, hojeChave,
+  diaLongo, falta, brl, num, parseNum, fmtIn, errMsg, chamarRobo, iniciais,
 } from "./util.js";
 
 /* ============================================================
@@ -118,6 +140,7 @@ textarea.input{height:auto;min-height:80px;padding:10px 11px;resize:vertical}
 .banner{display:flex;gap:10px;align-items:flex-start;border-radius:12px;padding:12px 14px}
 .banner.warn{background:var(--amber-soft);color:#7A3E06}
 .banner.info{background:var(--accent-tint);color:var(--accent-ink);border:1px solid var(--accent-soft)}
+.banner.err{background:var(--red-soft);color:var(--red)}
 .banner.bad{background:var(--red-soft);color:var(--red)}
 
 .kpi{display:flex;flex-direction:column;gap:4px}
@@ -271,6 +294,8 @@ const Icon = ({ name, size = 20 }) => {
     logout: <><path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3" /><path d="M10 17l5-5-5-5M15 12H4" /></>,
     search: <><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></>,
     bot: <><rect x="4" y="8" width="16" height="11" rx="3" /><path d="M12 4v4M9 13h.01M15 13h.01M9.5 16.5h5" /></>,
+    box: <><path d="M21 8 12 3 3 8v8l9 5 9-5V8Z" /><path d="m3 8 9 5 9-5M12 13v8" /></>,
+    scale: <><path d="M12 3v18M7 21h10M5 7h14" /><path d="m5 7-3 6a3 3 0 0 0 6 0L5 7ZM19 7l-3 6a3 3 0 0 0 6 0l-3-6Z" /></>,
   }[name];
   return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{p}</svg>;
 };
@@ -290,10 +315,14 @@ const TABS = [
   { id: "radar", nome: "Radar", icon: "radar" },
   { id: "processos", nome: "Processos", icon: "folder" },
   { id: "contratos", nome: "Contratos", icon: "file" },
+  { id: "catalogo", nome: "Produtos", icon: "box", pc: true },
+  { id: "reequilibrio", nome: "Reequilíbrio", icon: "scale", pc: true },
   { id: "agenda", nome: "Agenda", icon: "cal" },
   { id: "robo", nome: "Robô", icon: "bot" },
   { id: "ajustes", nome: "Ajustes", icon: "cog" },
 ];
+// Permissão que libera cada aba (Ajustes sempre aparece: conta e alertas)
+const PERM_ABA = { inicio: "processos", radar: "radar", processos: "processos", contratos: "contratos", catalogo: "catalogo", reequilibrio: "reequilibrio", agenda: "processos", robo: "robo" };
 
 /* ============================================================
    Sessão
@@ -381,7 +410,7 @@ function Auth() {
         ) : <b>Criar nova senha</b>}
         {modo === "criar" && <div className="field"><label htmlFor="a-nome">Seu nome</label><input id="a-nome" className="input" value={f.nome} onChange={(e) => setF({ ...f, nome: e.target.value })} autoComplete="name" /></div>}
         <div className="field"><label htmlFor="a-email">E-mail</label><input id="a-email" className="input" type="email" autoComplete="email" value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} /></div>
-        {modo !== "esqueci" && <div className="field"><label htmlFor="a-senha">Senha</label><input id="a-senha" className="input" type="password" autoComplete={modo === "criar" ? "new-password" : "current-password"} value={f.senha} onChange={(e) => setF({ ...f, senha: e.target.value })} /></div>}
+        {modo !== "esqueci" && <div className="field"><label htmlFor="a-senha">Senha</label><CampoSenha id="a-senha" autoComplete={modo === "criar" ? "new-password" : "current-password"} value={f.senha} onChange={(v) => setF({ ...f, senha: v })} /></div>}
         {err && <p className="err">{err}</p>}
         {info && <div className="banner info">{info}</div>}
         <button className="btn block" disabled={busy}>{busy ? "Aguarde…" : modo === "entrar" ? "Entrar" : modo === "criar" ? "Criar conta" : "Enviar link"}</button>
@@ -389,6 +418,23 @@ function Auth() {
         {modo === "esqueci" && <button type="button" className="linkbtn" onClick={() => setModo("entrar")}>Voltar para o login</button>}
       </form>
       <p className="hint" style={{ textAlign: "center" }}>O acesso é liberado pelo administrador da equipe.</p>
+    </div>
+  );
+}
+
+/* Campo de senha com o botão de olho para mostrar/esconder o que foi digitado */
+function CampoSenha({ id, value, onChange, autoComplete }) {
+  const [ver, setVer] = useState(false);
+  return (
+    <div style={{ position: "relative" }}>
+      <input id={id} className="input" type={ver ? "text" : "password"} autoComplete={autoComplete} value={value} onChange={(e) => onChange(e.target.value)} style={{ paddingRight: 46 }} spellCheck={false} autoCapitalize="none" />
+      <button type="button" onClick={() => setVer((v) => !v)} aria-label={ver ? "Esconder a senha" : "Mostrar a senha"} aria-pressed={ver} title={ver ? "Esconder a senha" : "Mostrar a senha"}
+        style={{ position: "absolute", right: 4, top: "50%", transform: "translateY(-50%)", width: 38, height: 34, border: 0, background: "transparent", color: "var(--muted)", cursor: "pointer", borderRadius: 8, display: "grid", placeItems: "center" }}>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z" /><circle cx="12" cy="12" r="3" />
+          {ver && <path d="M4 4l16 16" />}
+        </svg>
+      </button>
     </div>
   );
 }
@@ -405,7 +451,7 @@ function NovaSenha({ onDone, notify }) {
   return (
     <form className="auth card form" onSubmit={go} noValidate style={{ marginInline: 16 }}>
       <b>Escolha uma nova senha</b>
-      <div className="field"><label htmlFor="ns">Nova senha</label><input id="ns" className="input" type="password" value={s} onChange={(e) => setS(e.target.value)} autoComplete="new-password" /></div>
+      <div className="field"><label htmlFor="ns">Nova senha</label><CampoSenha id="ns" value={s} onChange={setS} autoComplete="new-password" /></div>
       {err && <p className="err">{err}</p>}
       <button className="btn block">Salvar</button>
     </form>
@@ -469,13 +515,16 @@ function Painel({ session, papel, notify }) {
   const [empresas, setEmpresas] = useState([]);
   const celular = useCelular();
   const email = session.user.email.toLowerCase();
-  const podeEquipe = papel === "admin" || papel === "equipe";
-  const pode = podeEquipe && !celular; // edição completa só no computador
   const eu = equipe.find((p) => p.email === email);
+  const admin = papel === "admin";
+  // O administrador vê tudo; os demais só as áreas que ele liberou (Ajustes → Equipe)
+  const perm = (k) => admin || !!(eu && eu.permissoes && eu.permissoes[k]);
+  const podeEquipe = admin || (papel === "equipe" && perm("editar"));
+  const pode = podeEquipe && !celular; // edição completa só no computador
 
   const carregar = useCallback(async () => {
     const [p, nv, eq, cf, em] = await Promise.all([
-      sb.from("processos").select("id,orgao,municipio,numero,objeto,portal,etapa,responsavel,data_sessao,prazo_impugnacao,prazo_esclarecimento,situacao_pncp,situacao_portal,link_origem,controle_pncp,erro,ultima_verificacao,created_at,valor_estimado,empresa_id,favorito,etapa_auto,etapa_motivo,etapa_antes,resultado").order("data_sessao", { ascending: true, nullsFirst: false }),
+      sb.from("processos").select("id,orgao,municipio,numero,objeto,portal,etapa,responsavel,data_sessao,prazo_impugnacao,prazo_esclarecimento,situacao_pncp,situacao_portal,link_origem,controle_pncp,erro,ultima_verificacao,created_at,valor_estimado,empresa_id,favorito,etapa_auto,etapa_motivo,etapa_antes,resultado,valor_homologado,validade_dias,validade_fonte").order("data_sessao", { ascending: true, nullsFirst: false }),
       sb.rpc("nao_vistas"),
       sb.from("equipe").select("*").order("nome"),
       sb.from("config").select("*").eq("id", 1).single(),
@@ -517,17 +566,26 @@ function Painel({ session, papel, notify }) {
   const abrir = (id) => { setTab("processos"); setProcId(id); };
   const ir = (t) => { setProcId(null); setTab(t); };
   const totalNV = Object.values(naoVistas).reduce((a, r) => a + Number(r.importantes || 0), 0);
-  const abas = celular ? TABS.filter((t) => t.id !== "robo") : TABS; // simulação do robô só no computador
-  const ctx = { session, email, papel, pode, podeEquipe, celular, equipe, config, empresas, procs, naoVistas, carregar, notify, abrir, ir, setConfig };
+  // celular: só monitoramento (robô, produtos e reequilíbrio ficam no computador)
+  const abas = TABS.filter((t) => (!celular || !t.pc) && (!PERM_ABA[t.id] || perm(PERM_ABA[t.id])));
+  const ctx = { session, email, papel, admin, perm, pode, podeEquipe, celular, equipe, config, empresas, procs, naoVistas, carregar, notify, abrir, ir, setConfig };
+  // Aba sem permissão (ex.: link antigo): vai para a primeira liberada
+  useEffect(() => {
+    if (!admin && !eu) return; // ainda carregando a equipe
+    if (!abas.some((t) => t.id === tab)) { setProcId(null); setTab(abas[0] ? abas[0].id : "ajustes"); }
+  }, [tab, admin, eu && JSON.stringify(eu.permissoes), celular]);
 
   let tela;
-  if (procId) tela = <Processo key={procId} id={procId} ctx={ctx} onBack={() => { setProcId(null); carregar(); }} />;
+  if (!admin && !eu) tela = <div className="card empty">Carregando…</div>;
+  else if (procId && perm("processos")) tela = <Processo key={procId} id={procId} ctx={ctx} onBack={() => { setProcId(null); carregar(); }} />;
+  else if (tab === "catalogo") tela = <Catalogo ctx={ctx} />;
+  else if (tab === "reequilibrio") tela = <Reequilibrio ctx={ctx} />;
   else if (tab === "inicio") tela = <Inicio ctx={ctx} />;
   else if (tab === "radar") tela = <Radar ctx={ctx} />;
   else if (tab === "processos") tela = <Processos ctx={ctx} />;
   else if (tab === "contratos") tela = <Contratos ctx={ctx} />;
   else if (tab === "agenda") tela = <Agenda ctx={ctx} />;
-  else if (tab === "robo") tela = <Simulador ctx={ctx} />;
+  else if (tab === "robo") tela = <RoboTela ctx={ctx} />;
   else tela = <Ajustes ctx={ctx} />;
 
   return (
@@ -975,7 +1033,8 @@ function Processos({ ctx }) {
   const daEmpresa = (procs || []).filter((p) => emp === "todas" || (emp === "sem" ? !p.empresa_id : p.empresa_id === emp));
   const contagem = Object.fromEntries(CATEGORIAS.map((c) => [c.id, daEmpresa.filter(c.teste).length]));
   // Sem escolha salva: abre em "Acompanhando" se houver; senão "Vamos participar".
-  const cat = CATEGORIAS.find((c) => c.id === filtro) || (contagem.acompanhando ? CATEGORIAS[2] : contagem.vamos ? CATEGORIAS[0] : CATEGORIAS[5]);
+  const catId = (id) => CATEGORIAS.find((c) => c.id === id);
+  const cat = catId(filtro) || (contagem.acompanhando ? catId("acompanhando") : contagem.finalizacao ? catId("finalizacao") : contagem.vamos ? catId("vamos") : catId("todos"));
   const escolher = (id) => { setFiltro(id); try { sessionStorage.setItem("lp-cat", id); } catch (e) { /* ignora */ } };
   const lista = daEmpresa.filter((p) => cat.teste(p) && (!q || `${p.orgao} ${p.municipio} ${p.numero} ${p.objeto}`.toLowerCase().includes(q.toLowerCase())));
   const ordenada = [...lista].sort((a, b) => {
@@ -1026,7 +1085,7 @@ function Processos({ ctx }) {
           <button className={verItens ? "on" : ""} onClick={() => setVerItens(true)}>🏆 Itens ganhos (para atas e contratos)</button>
         </div>
       )}
-      {cat.id === "ganhos" && verItens ? (todosGanhos === null ? <div className="card empty">Carregando…</div> : <ItensGanhos lista={todosGanhos} pode={pode} notify={notify} onMudou={carregarGanhos} abrir={abrir} />)
+      {cat.id === "ganhos" && verItens ? (todosGanhos === null ? <div className="card empty">Carregando…</div> : <ItensGanhos ctx={ctx} lista={todosGanhos} pode={pode} notify={notify} onMudou={carregarGanhos} abrir={abrir} />)
       : procs === null ? <div className="card empty">Carregando…</div> : !ordenada.length ? (
         <div className="card empty"><b>Nenhum processo em “{cat.nome}”</b>{cat.id === "vamos" ? "Marque ⭐ “Vamos participar” num edital do Radar ou cadastre pelo link." : pode ? "Clique em “Acompanhar processos” para puxar os processos do portal, ou use o Radar." : "Quando a equipe cadastrar processos, eles aparecem aqui."}</div>
       ) : (
@@ -1083,6 +1142,8 @@ function Contratos({ ctx }) {
   const [emp, setEmp] = useState("todas");
   const [q, setQ] = useState("");
   const [sel, setSel] = useState(null);
+  const [visao, setVisao] = useState(() => { try { return sessionStorage.getItem("lp-contratos") || "itens"; } catch (e) { return "itens"; } });
+  const escolherVisao = (v) => { setVisao(v); try { sessionStorage.setItem("lp-contratos", v); } catch (e) { /* ignora */ } };
   const variasEmpresas = empresas.length > 1;
   const empDe = (id) => empresas.find((e) => e.id === id);
   const nomeDe = (e) => (equipe.find((p) => p.email === e) || {}).nome || (e ? e.split("@")[0] : "—");
@@ -1142,14 +1203,20 @@ function Contratos({ ctx }) {
         <div className="card"><div className="hint clamp2" style={{ color: "var(--ink-2)" }}>{c.p.objeto}</div>
           <div className="row-inline" style={{ marginTop: 8 }}><PortalTag k={c.p.portal} /><ResultadoTag id={c.p.resultado} /><span className="tag ok">{c.itens.length} item(ns) vencido(s)</span><span className="tag">Total {brl(c.total)}</span></div>
         </div>
-        <ItensGanhos lista={c.itens} pode={pode} notify={notify} onMudou={carregarGanhos} unico abrir={abrir} />
+        <ContratosLancados ctx={ctx} processoId={c.id} processo={(procs || []).find((p) => p.id === c.id) || { id: c.id, ...c.p }} />
+        <ItensGanhos ctx={ctx} lista={c.itens} pode={pode} notify={notify} onMudou={carregarGanhos} unico abrir={abrir} />
       </div>
     );
   }
 
   return (
     <div className="stack">
-      <div className="top"><div><h1>Contratos</h1><p>Itens vencidos, organizados por processo como se fossem o contrato gerado</p></div></div>
+      <div className="top"><div><h1>Contratos</h1><p>{visao === "lancados" ? "Contratos, atas, empenhos e aditivos lançados pela equipe" : "Itens vencidos, organizados por processo como se fossem o contrato gerado"}</p></div></div>
+      <div className="seg" role="tablist" style={{ alignSelf: "flex-start" }}>
+        <button role="tab" aria-selected={visao === "itens"} className={visao === "itens" ? "on" : ""} onClick={() => escolherVisao("itens")}>🏆 Itens vencidos por processo</button>
+        <button role="tab" aria-selected={visao === "lancados"} className={visao === "lancados" ? "on" : ""} onClick={() => escolherVisao("lancados")}>📄 Contratos, atas e aditivos</button>
+      </div>
+      {visao === "lancados" ? <ContratosLancados ctx={ctx} /> : <>
       <div className="grid3">
         <div className="card kpi"><small>Contratos</small><b className="num">{daEmpresa.length}</b><small>Processos com itens vencidos</small></div>
         <div className="card kpi"><small>Itens vencidos</small><b className="num">{itensGeral}</b><small>Em todos os contratos</small></div>
@@ -1195,6 +1262,7 @@ function Contratos({ ctx }) {
           })}
         </div>
       )}
+      </>}
     </div>
   );
 }
@@ -1552,6 +1620,7 @@ function Processo({ id, ctx, onBack }) {
         <button role="tab" aria-selected={aba === "mov"} className={aba === "mov" ? "on" : ""} onClick={() => setAba("mov")}>Movimentações ({movs.filter((m) => !m.historico).length})</button>
         <button role="tab" aria-selected={aba === "pedidos"} className={aba === "pedidos" ? "on" : ""} onClick={() => setAba("pedidos")}>O que estão pedindo{pedidos.filter((x) => x.para_nos).length ? ` (${pedidos.filter((x) => x.para_nos).length} p/ nós)` : ""}</button>
         <button role="tab" aria-selected={aba === "itens"} className={aba === "itens" ? "on" : ""} onClick={() => setAba("itens")}>Itens ({itens.length}){meus.length ? ` · ${meus.length} nossos` : ""}</button>
+        {!ctx.celular && itens.length > 0 && <button role="tab" aria-selected={aba === "proposta"} className={aba === "proposta" ? "on" : ""} onClick={() => setAba("proposta")}>📝 Proposta{itens.some((i) => i.preco_unit != null) ? ` (${itens.filter((i) => i.preco_unit != null).length})` : ""}</button>}
         <button role="tab" aria-selected={aba === "ganhos"} className={aba === "ganhos" ? "on" : ""} onClick={() => setAba("ganhos")}>🏆 Itens ganhos{ganhos.length ? ` (${ganhos.length})` : ""}</button>
       </div>
 
@@ -1641,17 +1710,20 @@ function Processo({ id, ctx, onBack }) {
             <h2>Itens</h2>
             <label className="toggle"><input type="checkbox" checked={soMeus} onChange={(e) => setSoMeus(e.target.checked)} />Só os que vamos disputar</label>
           </div>
-          <p className="hint" style={{ marginBottom: 12 }}>Marque os itens que a empresa vai disputar e preencha custo, frete, impostos e margem. O app calcula o <b>valor mínimo</b> do lance e o robô avisa quando o resultado de cada um sair.</p>
+          <p className="hint" style={{ marginBottom: 12 }}>Marque os itens que a empresa vai disputar e digite o <b>valor mínimo</b> (piso) de cada um. Sem valor mínimo, o robô não dá lance no item.</p>
+          {!ctx.celular && itens.length > 0 && <CotacaoPainel p={p} itens={itens} pode={pode} notify={notify} onMudou={carregar} />}
           {!itens.length ? <div className="empty">Os itens aparecem aqui depois da primeira verificação.</div> : (
             <div className="stack" style={{ gap: 10 }}>
-              {(soMeus ? meus : itens).map((it) => <Item key={it.id} it={it} pode={pode} notify={notify} ganho={ganhos.find((g) => g.numero === it.numero)} onGanho={marcarGanho} onSaved={(n) => setItens((l) => l.map((x) => (x.id === n.id ? n : x)))} />)}
+              {(soMeus ? meus : itens).map((it) => <Item key={it.id} it={it} pode={pode} notify={notify} email={email} ganho={ganhos.find((g) => g.numero === it.numero)} onGanho={marcarGanho} onSaved={(n) => setItens((l) => l.map((x) => (x.id === n.id ? n : x)))} />)}
               {soMeus && !meus.length && <div className="empty">Nenhum item marcado ainda.</div>}
             </div>
           )}
         </div>
       )}
 
-      {aba === "ganhos" && <ItensGanhos lista={ganhos} pode={pode} notify={notify} onMudou={carregar} unico />}
+      {aba === "proposta" && !ctx.celular && <PropostaGrade itens={itens} pode={pode} notify={notify} onSaved={(n) => setItens((l) => l.map((x) => (x.id === n.id ? n : x)))} />}
+
+      {aba === "ganhos" && <ItensGanhos ctx={ctx} lista={ganhos} pode={pode} notify={notify} onMudou={carregar} unico />}
 
       {pode && (
         <div className="row-inline" style={{ justifyContent: "flex-end" }}>
@@ -1664,10 +1736,37 @@ function Processo({ id, ctx, onBack }) {
 
 /* Itens que vencemos: base do controle de atas e contratos.
    unico = dentro de um processo (mostra o formulário de ata/contrato para todos os itens). */
-function ItensGanhos({ lista, pode, notify, onMudou, unico, abrir }) {
+function ItensGanhos({ lista, pode, notify, onMudou, unico, abrir, ctx }) {
   const [f, setF] = useState({ ata_numero: "", contrato_numero: "", vigencia_inicio: "", vigencia_fim: "" });
   const [busy, setBusy] = useState(false);
   const [q, setQ] = useState("");
+  // Markup: custo do item ganho (digitado) ou, se faltar, o custo da cotação do item ou o custo atual do produto
+  const verCusto = !!(ctx && ctx.perm && ctx.perm("custos"));
+  const minimo = ctx && ctx.config ? Number(ctx.config.markup_minimo) : 20;
+  const [base, setBase] = useState({ itens: {}, produtos: {} });
+  useEffect(() => {
+    if (!verCusto || !lista.length) return;
+    const ids = [...new Set(lista.map((g) => g.item_id).filter(Boolean))];
+    const pids = [...new Set(lista.map((g) => g.produto_id).filter(Boolean))];
+    (async () => {
+      const it = {}, pr = {};
+      for (let i = 0; i < ids.length; i += 150) { const { data } = await sb.from("itens").select("id,custo").in("id", ids.slice(i, i + 150)); (data || []).forEach((x) => (it[x.id] = x.custo)); }
+      for (let i = 0; i < pids.length; i += 150) { const { data } = await sb.from("produtos").select("id,custo_atual,custo_em").in("id", pids.slice(i, i + 150)); (data || []).forEach((x) => (pr[x.id] = x)); }
+      setBase({ itens: it, produtos: pr });
+    })();
+  }, [verCusto, lista.length, lista.length && lista[0].id]);
+  const custoDe = (g) => {
+    if (g.custo_unit != null) return { v: Number(g.custo_unit), de: "digitado" };
+    if (g.item_id && base.itens[g.item_id] != null) return { v: Number(base.itens[g.item_id]), de: "da cotação" };
+    const p = g.produto_id && base.produtos[g.produto_id];
+    if (p && p.custo_atual != null) return { v: Number(p.custo_atual), de: "custo atual do produto" };
+    return null;
+  };
+  const mkDe = (g) => { const c = custoDe(g); return c && c.v > 0 && g.valor_unitario != null ? ((Number(g.valor_unitario) - c.v) / c.v) * 100 : null; };
+  const pctF = (v) => (v == null ? "—" : `${v.toLocaleString("pt-BR", { maximumFractionDigits: 1 })}%`);
+  const mks = verCusto ? lista.map(mkDe).filter((v) => v != null) : [];
+  const mkMedio = mks.length ? mks.reduce((a, b) => a + b, 0) / mks.length : null;
+  const abaixoN = mks.filter((v) => v < minimo).length;
   useEffect(() => {
     if (!unico || !lista.length) return;
     const g = lista[0];
@@ -1675,7 +1774,7 @@ function ItensGanhos({ lista, pode, notify, onMudou, unico, abrir }) {
   }, [unico, lista.length && lista[0].id]);
   const total = lista.reduce((a, g) => a + (Number(g.quantidade) || 0) * (Number(g.valor_unitario) || 0), 0);
   const salvarCampo = async (g, campo, valor) => {
-    const v = ["quantidade", "valor_unitario"].includes(campo) ? parseNum(valor) : (String(valor).trim() || null);
+    const v = ["quantidade", "valor_unitario", "custo_unit"].includes(campo) ? parseNum(valor) : (String(valor).trim() || null);
     if (v === g[campo] || (v == null && g[campo] == null)) return;
     const { error } = await sb.from("itens_ganhos").update({ [campo]: v }).eq("id", g.id);
     if (error) return notify(errMsg(error));
@@ -1686,8 +1785,22 @@ function ItensGanhos({ lista, pode, notify, onMudou, unico, abrir }) {
     setBusy(true);
     const patch = { ata_numero: f.ata_numero.trim() || null, contrato_numero: f.contrato_numero.trim() || null, vigencia_inicio: f.vigencia_inicio || null, vigencia_fim: f.vigencia_fim || null };
     const { error } = await sb.from("itens_ganhos").update(patch).in("id", lista.map((g) => g.id));
+    if (error) { setBusy(false); return notify(errMsg(error)); }
+    // Mesmo padrão em todo o app: a ata/contrato do processo também aparece em "Contratos, atas e aditivos"
+    const pid = lista[0] && lista[0].processo_id;
+    if (pid) {
+      const p = (ctx && ctx.procs || []).find((x) => x.id === pid) || (lista[0].processos ? { id: pid, ...lista[0].processos } : { id: pid });
+      const total = lista.reduce((a, g) => a + (Number(g.quantidade) || 0) * (Number(g.valor_unitario) || 0), 0);
+      for (const [tipo, numero] of [["ata", patch.ata_numero], ["contrato", patch.contrato_numero]]) {
+        if (!numero) continue;
+        const { data: ja } = await sb.from("contratos").select("id").eq("processo_id", pid).is("pai_id", null).eq("tipo", tipo).limit(1);
+        const reg = { numero, vigencia_inicio: patch.vigencia_inicio, vigencia_fim: patch.vigencia_fim };
+        const r = ja && ja.length ? await sb.from("contratos").update(reg).eq("id", ja[0].id)
+          : await sb.from("contratos").insert({ ...reg, tipo, processo_id: pid, empresa_id: p.empresa_id || null, orgao: p.orgao || "Órgão", municipio: p.municipio || null, pregao: p.numero || null, objeto: p.objeto || null, valor: tipo === "contrato" ? Math.round(total * 100) / 100 : null, fonte: "manual", criado_por: ctx && ctx.email });
+        if (r.error) notify(`Itens salvos, mas a lista de contratos não foi atualizada: ${errMsg(r.error)}`);
+      }
+    }
     setBusy(false);
-    if (error) return notify(errMsg(error));
     notify("Ata / contrato salvo em todos os itens ganhos"); onMudou && onMudou();
   };
   const filtrada = lista.filter((g) => !q || `${g.numero} ${g.descricao} ${g.marca || ""} ${g.ata_numero || ""} ${g.contrato_numero || ""} ${g.processos ? g.processos.orgao : ""}`.toLowerCase().includes(q.toLowerCase()));
@@ -1701,6 +1814,13 @@ function ItensGanhos({ lista, pode, notify, onMudou, unico, abrir }) {
           {lista.length > 8 && <input className="input" style={{ maxWidth: 220 }} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Filtrar" aria-label="Filtrar itens ganhos" />}
         </div>
       </div>
+      {verCusto && lista.length > 0 && (
+        <div className="row-inline" style={{ gap: 16, flexWrap: "wrap" }}>
+          <span>Markup médio geral: <b style={{ color: mkMedio != null && mkMedio < minimo ? "var(--red)" : "var(--green)" }}>{pctF(mkMedio)}</b> <span className="hint">({mks.length} de {lista.length} itens com custo)</span></span>
+          <MarkupMinimo ctx={ctx} />
+          {abaixoN > 0 && <span style={{ color: "var(--red)", fontWeight: 600 }}>⚠ {abaixoN} item(ns) abaixo do markup mínimo</span>}
+        </div>
+      )}
       <p className="hint" style={{ margin: 0 }}>Itens declarados vencedores para a empresa (pelo chat do portal ou pelo resultado no PNCP), mais os marcados à mão em “Itens”. Esta lista é a base para o controle das atas e contratos: quantidade, preço, marca, vigência, empenhos e entregas.</p>
       {unico && pode && lista.length > 0 && (
         <form className="fgrid" onSubmit={aplicarAta} noValidate>
@@ -1716,7 +1836,7 @@ function ItensGanhos({ lista, pode, notify, onMudou, unico, abrir }) {
           <table className="itab">
             <thead><tr>
               {!unico && <th>Processo</th>}
-              <th>Item</th><th>Descrição</th><th className="n">Qtd</th><th className="n">Valor unit.</th><th className="n">Total</th><th>Marca</th><th>Ata / contrato</th><th>Vigência</th>
+              <th>Item</th><th>Descrição</th><th className="n">Qtd</th><th className="n">Valor unit.</th><th className="n">Total</th><th>Marca</th>{verCusto && <><th className="n">Custo unit.</th><th className="n">Markup</th></>}<th>Ata / contrato</th><th>Vigência</th>
             </tr></thead>
             <tbody>
               {filtrada.map((g) => (
@@ -1728,6 +1848,14 @@ function ItensGanhos({ lista, pode, notify, onMudou, unico, abrir }) {
                   <td className="n">{pode ? <input className="input num mini" defaultValue={fmtIn(g.valor_unitario)} onBlur={(e) => salvarCampo(g, "valor_unitario", e.target.value)} aria-label={`Valor unitário do item ${g.numero}`} /> : brl(g.valor_unitario)}</td>
                   <td className="n">{brl((Number(g.quantidade) || 0) * (Number(g.valor_unitario) || 0))}</td>
                   <td>{pode ? <input className="input mini" style={{ width: 110 }} defaultValue={g.marca || ""} onBlur={(e) => salvarCampo(g, "marca", e.target.value)} aria-label={`Marca do item ${g.numero}`} /> : g.marca || "—"}</td>
+                  {verCusto && (() => {
+                    const c = custoDe(g); const mk = mkDe(g); const ruim = mk != null && mk < minimo;
+                    return <>
+                      <td className="n">{pode ? <input className="input num mini" defaultValue={fmtIn(g.custo_unit)} placeholder={c && c.de !== "digitado" ? fmtIn(c.v) : "0,00"} onBlur={(e) => salvarCampo(g, "custo_unit", e.target.value)} aria-label={`Custo unitário do item ${g.numero}`} /> : brl(c && c.v)}
+                        {c && c.de !== "digitado" && <div className="hint">{c.de}</div>}</td>
+                      <td className="n" style={{ fontWeight: 600, color: ruim ? "var(--red)" : mk != null ? "var(--green)" : undefined }}>{pctF(mk)}{ruim && <div className="hint" style={{ color: "var(--red)" }}>abaixo do aceitável</div>}</td>
+                    </>;
+                  })()}
                   <td>{[g.ata_numero && `Ata ${g.ata_numero}`, g.contrato_numero && `Contrato ${g.contrato_numero}`].filter(Boolean).join(" · ") || "—"}</td>
                   <td>{vig(g)}</td>
                 </tr>
@@ -1740,13 +1868,20 @@ function ItensGanhos({ lista, pode, notify, onMudou, unico, abrir }) {
   );
 }
 
-function Item({ it, pode, notify, onSaved, ganho, onGanho }) {
+function Item({ it, pode, notify, onSaved, ganho, onGanho, email }) {
   const [aberto, setAberto] = useState(false);
-  const [f, setF] = useState({ custo: fmtIn(it.custo), frete: fmtIn(it.frete), impostos_pct: fmtIn(it.impostos_pct), margem_pct: fmtIn(it.margem_pct), marca: it.marca || "" });
+  const inicial = () => ({ piso: fmtIn(it.valor_minimo), preco: fmtIn(it.preco_unit), marca: it.marca || "", anvisa: it.anvisa || "" });
+  const [f, setF] = useState(inicial);
+  useEffect(() => { if (!aberto) setF(inicial()); }, [it.valor_minimo, it.preco_unit, it.marca, it.anvisa]);
   const [busy, setBusy] = useState(false);
-  const calc = valorMinimo({ custo: parseNum(f.custo), frete: parseNum(f.frete), impostos_pct: parseNum(f.impostos_pct), margem_pct: parseNum(f.margem_pct) });
   const vm = it.valor_minimo != null ? Number(it.valor_minimo) : null;
   const lance = it.melhor_lance != null ? Number(it.melhor_lance) : null;
+  const sug = it.piso_sugerido != null ? Number(it.piso_sugerido) : null;
+  const pisoDig = parseNum(f.piso);
+  const precoDig = parseNum(f.preco);
+  const avisoPiso = pisoDig != null && pisoDig <= 0 ? "O valor mínimo precisa ser maior que zero."
+    : pisoDig != null && precoDig != null && pisoDig > precoDig ? "O valor mínimo está acima do valor unitário cotado."
+    : pisoDig != null && it.valor_ref != null && Number(it.valor_ref) > 0 && pisoDig > Number(it.valor_ref) ? "O valor mínimo está acima da referência do edital." : "";
 
   const marcar = async (v) => {
     const { data, error } = await sb.from("itens").update({ participar: v }).eq("id", it.id).select("*").single();
@@ -1754,12 +1889,16 @@ function Item({ it, pode, notify, onSaved, ganho, onGanho }) {
     onSaved(data); if (v) setAberto(true);
   };
   const salvar = async () => {
+    if (pisoDig != null && pisoDig <= 0) return notify("O valor mínimo precisa ser maior que zero.");
     setBusy(true);
-    const patch = { custo: parseNum(f.custo), frete: parseNum(f.frete), impostos_pct: parseNum(f.impostos_pct), margem_pct: parseNum(f.margem_pct), marca: f.marca.trim() || null, valor_minimo: calc };
+    const patch = { valor_minimo: pisoDig, preco_unit: precoDig, marca: f.marca.trim() || null, anvisa: f.anvisa.trim() || null };
+    if (precoDig != null && it.quantidade != null) patch.preco_total = Math.round(precoDig * Number(it.quantidade) * 100) / 100;
+    if (pisoDig !== vm) { patch.piso_por = email || null; patch.piso_em = new Date().toISOString(); }
     const { data, error } = await sb.from("itens").update(patch).eq("id", it.id).select("*").single();
     setBusy(false);
     if (error) return notify(errMsg(error));
-    onSaved(data); notify(`Item ${it.numero}: valor mínimo ${brl(calc, 2)}`);
+    onSaved(data); setAberto(false);
+    notify(pisoDig != null ? `Item ${it.numero}: valor mínimo ${brl(pisoDig, 2)}` : `Item ${it.numero} salvo sem valor mínimo: o robô não dá lance nele`);
   };
 
   return (
@@ -1784,6 +1923,9 @@ function Item({ it, pode, notify, onSaved, ganho, onGanho }) {
         {(it.situacao_portal || it.situacao) && <span>Situação: <b>{it.situacao_portal || it.situacao}</b></span>}
         {lance != null && <span>Melhor lance: <b>{brl(lance)}</b></span>}
         {vm != null && <span>Nosso mínimo: <b style={{ color: "var(--accent-ink)" }}>{brl(vm)}</b></span>}
+        {it.participar && vm == null && <span style={{ color: "var(--red)" }}>Sem valor mínimo: o robô não lança</span>}
+        {it.preco_unit != null && <span>Cotado: <b>{brl(it.preco_unit)}</b>{it.preco_total != null ? ` · total ${brl(it.preco_total)}` : ""}</span>}
+        {it.anvisa && <span>ANVISA: <b>{it.anvisa}</b></span>}
         {it.marca_ofertada ? <span>Marca ofertada: <b>{it.marca_ofertada}</b></span> : it.marca && <span>Marca: <b>{it.marca}</b></span>}
         {it.nosso_lance != null && <span>Nosso lance: <b>{brl(it.nosso_lance)}</b></span>}
         {it.nossa_posicao != null && <span>Colocação: <b>{it.nossa_posicao}º{it.participantes ? ` de ${it.participantes}` : ""}</b></span>}
@@ -1803,17 +1945,22 @@ function Item({ it, pode, notify, onSaved, ganho, onGanho }) {
         aberto || vm == null ? (
           <div className="stack" style={{ gap: 8 }}>
             <div className="calc">
-              <div className="field"><label htmlFor={`c-${it.id}`}>Custo unitário</label><input id={`c-${it.id}`} className="input num" inputMode="decimal" disabled={!pode} value={f.custo} onChange={(e) => setF({ ...f, custo: e.target.value })} placeholder="0,00" /></div>
-              <div className="field"><label htmlFor={`f-${it.id}`}>Frete unitário</label><input id={`f-${it.id}`} className="input num" inputMode="decimal" disabled={!pode} value={f.frete} onChange={(e) => setF({ ...f, frete: e.target.value })} placeholder="0,00" /></div>
-              <div className="field"><label htmlFor={`i-${it.id}`}>Impostos %</label><input id={`i-${it.id}`} className="input num" inputMode="decimal" disabled={!pode} value={f.impostos_pct} onChange={(e) => setF({ ...f, impostos_pct: e.target.value })} placeholder="Ex.: 8" /></div>
-              <div className="field"><label htmlFor={`m-${it.id}`}>Margem %</label><input id={`m-${it.id}`} className="input num" inputMode="decimal" disabled={!pode} value={f.margem_pct} onChange={(e) => setF({ ...f, margem_pct: e.target.value })} placeholder="Ex.: 12" /></div>
+              <div className="field"><label htmlFor={`vm-${it.id}`}>Valor mínimo do lance (piso)</label><input id={`vm-${it.id}`} className="input num" inputMode="decimal" disabled={!pode} value={f.piso} onChange={(e) => setF({ ...f, piso: e.target.value })} placeholder="Digite o piso" /></div>
+              <div className="field"><label htmlFor={`pu-${it.id}`}>Valor unitário cotado</label><input id={`pu-${it.id}`} className="input num" inputMode="decimal" disabled={!pode} value={f.preco} onChange={(e) => setF({ ...f, preco: e.target.value })} placeholder="0,00" /></div>
               <div className="field"><label htmlFor={`mk-${it.id}`}>Marca</label><input id={`mk-${it.id}`} className="input" disabled={!pode} value={f.marca} onChange={(e) => setF({ ...f, marca: e.target.value })} /></div>
-              <div className="vmin"><small>Valor mínimo do lance</small><b className="num">{calc != null ? brl(calc) : "—"}</b></div>
+              <div className="field"><label htmlFor={`av-${it.id}`}>Reg. ANVISA</label><input id={`av-${it.id}`} className="input" disabled={!pode} value={f.anvisa} onChange={(e) => setF({ ...f, anvisa: e.target.value })} /></div>
             </div>
-            <p className="hint">Valor mínimo = (custo + frete) ÷ (1 − impostos − margem). Abaixo dele, a empresa passa a ter margem menor que a definida.</p>
-            {pode && <div className="row-inline"><button className="btn sm" onClick={salvar} disabled={busy}>{busy ? "Salvando…" : "Salvar valores"}</button>{vm != null && <button className="btn ghost sm" onClick={() => setAberto(false)}>Fechar</button>}</div>}
+            {sug != null && sug !== pisoDig && (
+              <div className="row-inline" style={{ gap: 8 }}>
+                <span className="hint">Sugestão da planilha de cotação: <b>{brl(sug)}</b></span>
+                {pode && <button type="button" className="btn ghost sm" onClick={() => setF({ ...f, piso: fmtIn(sug) })}>Usar como piso</button>}
+              </div>
+            )}
+            {avisoPiso && <div className="alerta-lance ruim">{avisoPiso}</div>}
+            <p className="hint">O valor mínimo é digitado à mão e confirmado por você. O robô nunca lança abaixo dele; sem valor mínimo, o robô não lança neste item.</p>
+            {pode && <div className="row-inline"><button className="btn sm" onClick={salvar} disabled={busy}>{busy ? "Salvando…" : "Salvar"}</button>{vm != null && <button className="btn ghost sm" onClick={() => { setF(inicial()); setAberto(false); }}>Fechar</button>}</div>}
           </div>
-        ) : <button className="linkbtn" style={{ alignSelf: "flex-start" }} onClick={() => setAberto(true)}>{pode ? "Editar custo e margem" : "Ver cálculo"}</button>
+        ) : <button className="linkbtn" style={{ alignSelf: "flex-start" }} onClick={() => setAberto(true)}>{pode ? "Editar valor mínimo, preço e marca" : "Ver valores"}</button>
       )}
     </div>
   );
@@ -2181,34 +2328,55 @@ function SomAlerta() {
   );
 }
 
+// Equipe: só o administrador (dono do sistema) libera pessoas e escolhe o que cada uma vê e pode fazer.
+const PERM_PADRAO = { processos: true, contratos: true }; // ponto de partida ao liberar alguém novo
 function Equipe({ equipe, admin, notify, carregar, email }) {
-  const [f, setF] = useState({ email: "", nome: "", papel: "equipe" });
+  const [f, setF] = useState({ email: "", nome: "" });
+  const [aberto, setAberto] = useState(null);
   const add = async (e) => {
     e.preventDefault();
     const em = f.email.trim().toLowerCase();
     if (!/^\S+@\S+\.\S+$/.test(em)) return notify("Digite um e-mail válido.");
-    const { error } = await sb.from("equipe").upsert({ email: em, nome: f.nome.trim(), papel: f.papel, ativo: true }, { onConflict: "email" });
+    const { error } = await sb.from("equipe").upsert({ email: em, nome: f.nome.trim(), papel: "acompanha", ativo: true, permissoes: PERM_PADRAO }, { onConflict: "email" });
     if (error) return notify(errMsg(error));
-    setF({ email: "", nome: "", papel: "equipe" }); notify(`${f.nome || em} liberado(a)`); carregar();
+    setF({ email: "", nome: "" }); setAberto(em); notify(`${f.nome || em} liberado(a). Marque o que essa pessoa pode ver.`); carregar();
   };
-  const upd = async (m, patch, msg) => { const { error } = await sb.from("equipe").update(patch).eq("email", m.email); if (error) return notify(errMsg(error)); notify(msg); carregar(); };
+  const upd = async (m, patch, msg) => { const { error } = await sb.from("equipe").update(patch).eq("email", m.email); if (error) return notify(errMsg(error)); if (msg) notify(msg); carregar(); };
+  const marcar = (m, k, v) => {
+    const permissoes = { ...(m.permissoes || {}), [k]: v };
+    const patch = { permissoes };
+    // "Alterar dados" depende do perfil de equipe no banco
+    if (k === "editar") patch.papel = v ? "equipe" : "acompanha";
+    upd(m, patch);
+  };
+  const resumo = (m) => (m.papel === "admin" ? "Administrador: vê e altera tudo" : PERMISSOES.filter((p) => m.permissoes && m.permissoes[p.id]).map((p) => p.nome.split(" (")[0]).join(" · ") || "Nenhuma área liberada");
   return (
     <div className="card form">
-      <div className="card-h" style={{ marginBottom: 0 }}><h2>Equipe</h2><small>{equipe.filter((m) => m.ativo).length} com acesso</small></div>
+      <div className="card-h" style={{ marginBottom: 0 }}><h2>Equipe e permissões</h2><small>{equipe.filter((m) => m.ativo).length} com acesso</small></div>
+      <p className="hint" style={{ margin: 0 }}>{admin ? "Só você (administrador) libera pessoas e escolhe o que cada uma vê. Quem não tem uma área marcada não vê essa aba nem os dados dela." : "Somente o administrador muda a equipe e as permissões."}</p>
       <div className="list">
         {equipe.map((m) => (
-          <div key={m.email} className="lrow" style={{ alignItems: "center", flexWrap: "wrap" }}>
+          <div key={m.email} className="lrow" style={{ alignItems: "flex-start", flexWrap: "wrap" }}>
             <span className="brand-mark" style={{ background: m.ativo ? "var(--accent)" : "var(--muted)", fontSize: 12, fontWeight: 700 }}>{iniciais(m.nome || m.email)}</span>
-            <div className="lmain"><span className="lt">{m.nome || m.email}{m.email === email ? " (você)" : ""}</span><span className="ls">{m.email}{!m.ativo ? " · sem acesso" : ""}</span></div>
-            {admin && m.email !== email ? (
+            <div className="lmain" style={{ minWidth: 200 }}>
+              <span className="lt">{m.nome || m.email}{m.email === email ? " (você)" : ""}</span>
+              <span className="ls">{m.email}{!m.ativo ? " · sem acesso" : ""}</span>
+              <span className="ls">{resumo(m)}</span>
+            </div>
+            {admin && m.papel !== "admin" && (
               <div className="row-inline">
-                <select className="input" style={{ width: "auto", height: 34 }} value={m.papel} onChange={(e) => upd(m, { papel: e.target.value }, "Perfil atualizado")} aria-label={`Perfil de ${m.nome || m.email}`}>
-                  {Object.entries(PAPEIS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-                </select>
+                <button type="button" className="btn ghost sm" onClick={() => setAberto(aberto === m.email ? null : m.email)}>{aberto === m.email ? "Fechar" : "Permissões"}</button>
                 {m.ativo ? <ConfirmX label="Bloquear" confirmLabel="Bloquear acesso?" onConfirm={() => upd(m, { ativo: false }, "Acesso bloqueado")} />
                   : <button className="btn ghost sm" onClick={() => upd(m, { ativo: true }, "Acesso liberado")}>Liberar</button>}
               </div>
-            ) : <span className="tag">{PAPEIS[m.papel].split(" (")[0]}</span>}
+            )}
+            {admin && aberto === m.email && m.papel !== "admin" && (
+              <div className="stack" style={{ gap: 6, width: "100%", paddingLeft: 44 }}>
+                {PERMISSOES.map((p) => (
+                  <label key={p.id} className="toggle"><input type="checkbox" checked={!!(m.permissoes && m.permissoes[p.id])} onChange={(e) => marcar(m, p.id, e.target.checked)} />{p.nome}</label>
+                ))}
+              </div>
+            )}
           </div>
         ))}
       </div>
@@ -2218,12 +2386,8 @@ function Equipe({ equipe, admin, notify, carregar, email }) {
           <div className="fgrid">
             <div className="field"><label htmlFor="eq-nome">Nome</label><input id="eq-nome" className="input" value={f.nome} onChange={(e) => setF({ ...f, nome: e.target.value })} placeholder="Ex.: Marcio" /></div>
             <div className="field"><label htmlFor="eq-email">E-mail</label><input id="eq-email" className="input" type="email" value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} /></div>
-            <div className="field"><label htmlFor="eq-papel">Perfil</label>
-              <select id="eq-papel" className="input" value={f.papel} onChange={(e) => setF({ ...f, papel: e.target.value })}>
-                {Object.entries(PAPEIS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-              </select></div>
           </div>
-          <p className="hint">Depois de liberar, a pessoa cria a conta no app com este mesmo e-mail. “Acompanha disputas” vê tudo e faz anotações, mas não muda valores nem cadastra processos.</p>
+          <p className="hint">Depois de liberar, a pessoa cria a conta no app com este mesmo e-mail. Ela começa vendo só Processos e Contratos, sem alterar nada; marque em “Permissões” o que mais ela pode ver ou fazer.</p>
           <button className="btn" style={{ alignSelf: "flex-start" }}>Liberar acesso</button>
         </form>
       )}

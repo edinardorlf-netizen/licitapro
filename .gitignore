@@ -1,3 +1,13 @@
 node_modules/
 
 modelos/
+# Robô de lances: chave, perfil do navegador (cookies do portal), logs
+robo-lances/config.env
+robo-lances/perfil/
+robo-lances/logs/
+robo-lances/robo.pid
+robo-lances/PARAR.flag
+dados/
+robo-lances/DESLIGADO.flag
+robo-lances/cadastrar-chave.sql
+*.zip
