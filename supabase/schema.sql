@@ -829,3 +829,12 @@ create index if not exists ordem_itens_ganho_idx on public.ordem_itens (ganho_id
 --   Acha/cria o produto da regra, move os itens escolhidos, leva os custos dos produtos que
 --   ficaram vazios e apaga esses produtos vazios. Permissão: pode_editar() and tem_perm('catalogo').
 -- =====================================================================
+-- =====================================================================
+-- Migrações documentos_edital + edital_resumo (14/11/2026) · aba "📑 Edital" do processo
+-- Função licita-edital (verify_jwt true): devolve o texto do edital (baixado do PCP/PNCP ou arquivo enviado).
+-- O app (src/documentosEdital.js) acha pontos de atenção e documentos exigidos, com trecho de origem;
+-- o usuário revisa e grava.
+-- =====================================================================
+alter table public.processos add column if not exists documentos_edital jsonb;   -- [{nome,categoria,item,validade,status,obs,trecho,confirmar}] → aba Documentos da planilha
+alter table public.processos add column if not exists documentos_lidos_em timestamptz;
+alter table public.processos add column if not exists edital_resumo jsonb;       -- {arquivo,paginas,parcial,pontos:[{grupo,titulo,valor,item,pagina,trecho}],faltou:[]}

@@ -44,7 +44,7 @@ export default function PropostaEtapa({ ctx }) {
       </div>
       <div className="card" style={{ padding: "12px 16px" }}>
         <div className="row-inline" style={{ gap: 18, flexWrap: "wrap" }}>
-          {["1 · Marcar os itens", "2 · Baixar a planilha de cotação", "3 · Enviar a planilha preenchida (preço e marca)", "4 · Gerar a proposta em Word", "5 · Cadastrar no portal"].map((t) => <span key={t} className="hint" style={{ fontWeight: 600 }}>{t}</span>)}
+          {["0 · Ler o edital (atenção e documentos)", "1 · Marcar os itens", "2 · Baixar a planilha de cotação", "3 · Enviar a planilha preenchida (preço e marca)", "4 · Gerar a proposta em Word", "5 · Cadastrar no portal"].map((t) => <span key={t} className="hint" style={{ fontWeight: 600 }}>{t}</span>)}
         </div>
       </div>
       {procs === null || resumo === null ? <div className="card empty">Carregando…</div> : !lista.length ? (
@@ -76,6 +76,7 @@ export default function PropostaEtapa({ ctx }) {
                   {r && r.marcados > 0 && r.com_piso < r.marcados && <span className="tag warn">{r.marcados - r.com_piso} sem valor mínimo (o robô não lança)</span>}
                 </div>
                 <div className="row-inline" style={{ gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+                  <button type="button" className={`btn sm${p.documentos_lidos_em ? " ghost" : ""}`} onClick={() => abrir(p.id, "edital")}>📑 {p.documentos_lidos_em ? "Edital lido: atenção e documentos" : "Ler o edital"}</button>
                   <button type="button" className="btn sm" onClick={() => abrir(p.id, "itens")}>☑ Itens e planilha de cotação</button>
                   <button type="button" className="btn ghost sm" onClick={() => abrir(p.id, "proposta")}>📝 Preços, marcas e proposta em Word</button>
                 </div>

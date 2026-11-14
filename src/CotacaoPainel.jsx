@@ -48,7 +48,7 @@ export default function CotacaoPainel({ p, itens, pode, notify, onMudou, onPropo
     setBusy("gerar"); setErro("");
     try {
       const { lista, usados, velhos } = await doCatalogo(paraGerar);
-      const blob = await gerarPlanilha(p, lista);
+      const blob = await gerarPlanilha(p, lista, p.documentos_edital || []);
       baixar(blob, nomeArquivo(p));
       notify(`Planilha gerada com ${paraGerar.length} ${paraGerar.length === 1 ? "item" : "itens"}${usados ? ` · ${usados} com custo do banco` : ""}`);
       setAvisoCusto(velhos ? `${velhos} item(ns) saíram com custo desatualizado (mais de ${DIAS_CUSTO_VELHO} dias). Confira e atualize na aba Produtos.` : "");

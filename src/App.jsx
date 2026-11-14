@@ -25,6 +25,7 @@ import Reequilibrio from "./Reequilibrio.jsx";
 import ContratosLancados from "./ContratosLancados.jsx";
 import PropostaEtapa from "./PropostaEtapa.jsx";
 import Demandas from "./Demandas.jsx";
+import LeituraEdital from "./LeituraEdital.jsx";
 import {
   sb, appUrl, portal, PORTAIS, ETAPAS, etapa, ATIVAS, A_LANCAR, ACOMPANHANDO, CATEGORIAS, RESULTADOS, resultado, ganhou, PAPEIS, PERMISSOES, fmtData, fmtDataCurta, fmtHora, fmtDH, diaChave, hojeChave,
   diaLongo, falta, brl, num, parseNum, fmtIn, errMsg, chamarRobo, iniciais,
@@ -535,7 +536,7 @@ function Painel({ session, papel, notify }) {
 
   const carregar = useCallback(async () => {
     const [p, nv, eq, cf, em] = await Promise.all([
-      sb.from("processos").select("id,orgao,municipio,numero,objeto,portal,etapa,responsavel,data_sessao,prazo_impugnacao,prazo_esclarecimento,situacao_pncp,situacao_portal,link_origem,controle_pncp,erro,ultima_verificacao,created_at,valor_estimado,empresa_id,favorito,etapa_auto,etapa_motivo,etapa_antes,resultado,valor_homologado,validade_dias,validade_fonte").order("data_sessao", { ascending: true, nullsFirst: false }),
+      sb.from("processos").select("id,orgao,municipio,numero,objeto,portal,etapa,responsavel,data_sessao,prazo_impugnacao,prazo_esclarecimento,situacao_pncp,situacao_portal,link_origem,controle_pncp,erro,ultima_verificacao,created_at,valor_estimado,empresa_id,favorito,etapa_auto,etapa_motivo,etapa_antes,resultado,valor_homologado,validade_dias,validade_fonte,documentos_lidos_em").order("data_sessao", { ascending: true, nullsFirst: false }),
       sb.rpc("nao_vistas"),
       sb.from("equipe").select("*").order("nome"),
       sb.from("config").select("*").eq("id", 1).single(),
@@ -1636,6 +1637,7 @@ function Processo({ id, ctx, onBack, abaInicial }) {
         <button role="tab" aria-selected={aba === "mov"} className={aba === "mov" ? "on" : ""} onClick={() => setAba("mov")}>Movimentações ({movs.filter((m) => !m.historico).length})</button>
         <button role="tab" aria-selected={aba === "pedidos"} className={aba === "pedidos" ? "on" : ""} onClick={() => setAba("pedidos")}>O que estão pedindo{pedidos.filter((x) => x.para_nos).length ? ` (${pedidos.filter((x) => x.para_nos).length} p/ nós)` : ""}</button>
         <button role="tab" aria-selected={aba === "itens"} className={aba === "itens" ? "on" : ""} onClick={() => setAba("itens")}>Itens ({itens.length}){meus.length ? ` · ${meus.length} nossos` : ""}</button>
+        <button role="tab" aria-selected={aba === "edital"} className={aba === "edital" ? "on" : ""} onClick={() => setAba("edital")}>📑 Edital{p.documentos_lidos_em ? " ✓" : ""}</button>
         {!ctx.celular && (itens.length > 0 || ganhos.length > 0) && <button role="tab" aria-selected={aba === "proposta"} className={aba === "proposta" ? "on" : ""} onClick={() => setAba("proposta")}>📝 Proposta{itens.some((i) => i.preco_unit != null) ? ` (${itens.filter((i) => i.preco_unit != null).length})` : ""}</button>}
         <button role="tab" aria-selected={aba === "ganhos"} className={aba === "ganhos" ? "on" : ""} onClick={() => setAba("ganhos")}>🏆 Itens ganhos{ganhos.length ? ` (${ganhos.length})` : ""}</button>
       </div>
@@ -1737,6 +1739,7 @@ function Processo({ id, ctx, onBack, abaInicial }) {
         </div>
       )}
 
+      {aba === "edital" && <LeituraEdital p={p} pode={pode} notify={notify} salvar={salvar} />}
       {aba === "proposta" && !ctx.celular && <PropostaWord p={p} itens={itens} ganhos={ganhos} ctx={ctx} salvar={salvar} />}
       {aba === "proposta" && !ctx.celular && itens.length > 0 && <PropostaGrade itens={itens} pode={pode} notify={notify} onSaved={(n) => setItens((l) => l.map((x) => (x.id === n.id ? n : x)))} />}
 
