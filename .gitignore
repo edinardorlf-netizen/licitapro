@@ -11,3 +11,4 @@ dados/
 robo-lances/DESLIGADO.flag
 robo-lances/cadastrar-chave.sql
 *.zip
+.claude/
