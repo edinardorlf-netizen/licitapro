@@ -10,7 +10,7 @@ import { gerarPlanilha, lerPlanilha, baixar, nomeArquivo } from "./cotacao.js";
 import { produtoDe, diasDesde, DIAS_CUSTO_VELHO } from "./produtos.js";
 import { carregarProdutos } from "./dados.js";
 
-export default function CotacaoPainel({ p, itens, pode, notify, onMudou }) {
+export default function CotacaoPainel({ p, itens, pode, notify, onMudou, onProposta }) {
   const [busy, setBusy] = useState("");
   const [todos, setTodos] = useState(false);
   const [lido, setLido] = useState(null); // { linhas, avisos, nome }
@@ -114,6 +114,7 @@ export default function CotacaoPainel({ p, itens, pode, notify, onMudou }) {
         <button type="button" className="btn sm" onClick={gerar} disabled={!!busy}>{busy === "gerar" ? <span className="spin" /> : null}📥 Baixar planilha ({paraGerar.length} {paraGerar.length === 1 ? "item" : "itens"})</button>
         <button type="button" className="btn ghost sm" onClick={() => inp.current && inp.current.click()} disabled={!!busy}>{busy === "ler" ? <span className="spin" /> : null}📤 Enviar planilha preenchida</button>
         <input ref={inp} type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" style={{ display: "none" }} onChange={ler} />
+        {onProposta && itens.some((i) => i.participar && i.preco_unit != null) && <button type="button" className="btn ghost sm" onClick={onProposta}>📄 Gerar proposta (Word)</button>}
         {marcados.length > 0 && marcados.length < itens.length && <label className="toggle"><input type="checkbox" checked={todos} onChange={(e) => setTodos(e.target.checked)} />Incluir todos os itens do edital</label>}
       </div>
       <p className="hint" style={{ margin: 0 }}>{marcados.length ? `A planilha sai com os ${marcados.length} itens marcados para disputa${todos ? " (agora: todos os itens)" : ""}.` : "Nenhum item marcado ainda: a planilha sai com todos os itens do edital."} Preencha valor unitário, marca e, se quiser, o lance mínimo; depois envie de volta.</p>

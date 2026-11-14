@@ -19,6 +19,7 @@ function RoboTela({ ctx }) {
 }
 import CotacaoPainel from "./CotacaoPainel.jsx";
 import PropostaGrade from "./PropostaGrade.jsx";
+import PropostaWord from "./PropostaWord.jsx";
 import Catalogo, { MarkupMinimo } from "./Catalogo.jsx";
 import Reequilibrio from "./Reequilibrio.jsx";
 import ContratosLancados from "./ContratosLancados.jsx";
@@ -1620,7 +1621,7 @@ function Processo({ id, ctx, onBack }) {
         <button role="tab" aria-selected={aba === "mov"} className={aba === "mov" ? "on" : ""} onClick={() => setAba("mov")}>Movimentações ({movs.filter((m) => !m.historico).length})</button>
         <button role="tab" aria-selected={aba === "pedidos"} className={aba === "pedidos" ? "on" : ""} onClick={() => setAba("pedidos")}>O que estão pedindo{pedidos.filter((x) => x.para_nos).length ? ` (${pedidos.filter((x) => x.para_nos).length} p/ nós)` : ""}</button>
         <button role="tab" aria-selected={aba === "itens"} className={aba === "itens" ? "on" : ""} onClick={() => setAba("itens")}>Itens ({itens.length}){meus.length ? ` · ${meus.length} nossos` : ""}</button>
-        {!ctx.celular && itens.length > 0 && <button role="tab" aria-selected={aba === "proposta"} className={aba === "proposta" ? "on" : ""} onClick={() => setAba("proposta")}>📝 Proposta{itens.some((i) => i.preco_unit != null) ? ` (${itens.filter((i) => i.preco_unit != null).length})` : ""}</button>}
+        {!ctx.celular && (itens.length > 0 || ganhos.length > 0) && <button role="tab" aria-selected={aba === "proposta"} className={aba === "proposta" ? "on" : ""} onClick={() => setAba("proposta")}>📝 Proposta{itens.some((i) => i.preco_unit != null) ? ` (${itens.filter((i) => i.preco_unit != null).length})` : ""}</button>}
         <button role="tab" aria-selected={aba === "ganhos"} className={aba === "ganhos" ? "on" : ""} onClick={() => setAba("ganhos")}>🏆 Itens ganhos{ganhos.length ? ` (${ganhos.length})` : ""}</button>
       </div>
 
@@ -1711,7 +1712,7 @@ function Processo({ id, ctx, onBack }) {
             <label className="toggle"><input type="checkbox" checked={soMeus} onChange={(e) => setSoMeus(e.target.checked)} />Só os que vamos disputar</label>
           </div>
           <p className="hint" style={{ marginBottom: 12 }}>Marque os itens que a empresa vai disputar e digite o <b>valor mínimo</b> (piso) de cada um. Sem valor mínimo, o robô não dá lance no item.</p>
-          {!ctx.celular && itens.length > 0 && <CotacaoPainel p={p} itens={itens} pode={pode} notify={notify} onMudou={carregar} />}
+          {!ctx.celular && itens.length > 0 && <CotacaoPainel p={p} itens={itens} pode={pode} notify={notify} onMudou={carregar} onProposta={() => setAba("proposta")} />}
           {!itens.length ? <div className="empty">Os itens aparecem aqui depois da primeira verificação.</div> : (
             <div className="stack" style={{ gap: 10 }}>
               {(soMeus ? meus : itens).map((it) => <Item key={it.id} it={it} pode={pode} notify={notify} email={email} ganho={ganhos.find((g) => g.numero === it.numero)} onGanho={marcarGanho} onSaved={(n) => setItens((l) => l.map((x) => (x.id === n.id ? n : x)))} />)}
@@ -1721,8 +1722,14 @@ function Processo({ id, ctx, onBack }) {
         </div>
       )}
 
-      {aba === "proposta" && !ctx.celular && <PropostaGrade itens={itens} pode={pode} notify={notify} onSaved={(n) => setItens((l) => l.map((x) => (x.id === n.id ? n : x)))} />}
+      {aba === "proposta" && !ctx.celular && <PropostaWord p={p} itens={itens} ganhos={ganhos} ctx={ctx} salvar={salvar} />}
+      {aba === "proposta" && !ctx.celular && itens.length > 0 && <PropostaGrade itens={itens} pode={pode} notify={notify} onSaved={(n) => setItens((l) => l.map((x) => (x.id === n.id ? n : x)))} />}
 
+      {aba === "ganhos" && pode && !ctx.celular && ganhos.length > 0 && (
+        <div className="row-inline" style={{ justifyContent: "flex-end" }}>
+          <button type="button" className="btn ghost sm" onClick={() => setAba("proposta")}>📄 Proposta ajustada em Word</button>
+        </div>
+      )}
       {aba === "ganhos" && <ItensGanhos ctx={ctx} lista={ganhos} pode={pode} notify={notify} onMudou={carregar} unico />}
 
       {pode && (

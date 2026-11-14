@@ -732,3 +732,37 @@ create trigger contratos_tocar before update on public.contratos for each row ex
 -- RLS: ver = is_equipe() and tem_perm('robo'); ligar/criar = pode_editar() and tem_perm('robo');
 --      parar (update parado/ativo/estrategia/config, parado_geral) = is_equipe() and tem_perm('robo').
 --      authenticated não altera robo_disputas.modo (grant por coluna).
+
+
+-- =====================================================================
+-- Migração proposta_word (14/11/2026): proposta em Word (PROPOSTA / PROPOSTA AJUSTADA)
+-- =====================================================================
+-- Dados da empresa e do representante usados na proposta (dados pessoais: só quem edita vê; só o administrador altera)
+create table if not exists public.empresa_proposta (
+  empresa_id uuid primary key references public.empresas(id) on delete cascade,
+  dados jsonb not null default '{}'::jsonb,   -- razao, razao_assinatura, cnpj, endereco, cidade, banco, representante, rg, cpf, cargo, email, validade_dias
+  atualizado_em timestamptz not null default now(),
+  atualizado_por text
+);
+alter table public.empresa_proposta enable row level security;
+create policy "ver dados da proposta" on public.empresa_proposta for select using (pode_editar());
+create policy "admin altera dados da proposta" on public.empresa_proposta for all using (is_admin()) with check (is_admin());
+
+-- Modelo Word da proposta (.docx em base64 com marcadores {{...}}); fica no banco, nunca no GitHub
+create table if not exists public.modelos_documentos (
+  id uuid primary key default gen_random_uuid(),
+  empresa_id uuid not null references public.empresas(id) on delete cascade,
+  tipo text not null default 'proposta',
+  nome text,
+  arquivo text not null,
+  atualizado_em timestamptz not null default now(),
+  atualizado_por text,
+  unique (empresa_id, tipo)
+);
+alter table public.modelos_documentos enable row level security;
+create policy "ver modelos" on public.modelos_documentos for select using (pode_editar());
+create policy "admin altera modelos" on public.modelos_documentos for all using (is_admin()) with check (is_admin());
+
+-- Por processo: nº do processo licitatório (≠ nº do pregão) e opções da proposta ({"colunas": {"anvisa": bool, "obs": bool}})
+alter table public.processos add column if not exists numero_processo text;
+alter table public.processos add column if not exists proposta_opcoes jsonb not null default '{}'::jsonb;
