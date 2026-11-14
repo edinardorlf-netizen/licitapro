@@ -64,6 +64,12 @@ export default function RoboAoVivo({ ctx }) {
   }, []);
 
   useEffect(() => { carregar(); const t = setInterval(carregar, 3000); return () => clearInterval(t); }, [carregar]);
+  // Itens com preço por processo (mesma regra do robô para entrar no dia)
+  const [resumo, setResumo] = useState({});
+  useEffect(() => {
+    const f = () => sb.rpc("resumo_propostas").then(({ data }) => { if (data) setResumo(Object.fromEntries(data.map((r) => [r.processo_id, r]))); });
+    f(); const t = setInterval(f, 30000); return () => clearInterval(t);
+  }, []);
 
   const online = estado?.sinal_em && Date.now() - Date.parse(estado.sinal_em) < 20000 && estado.status !== "desligado";
   const quem = ctx.email || null;
@@ -109,20 +115,29 @@ export default function RoboAoVivo({ ctx }) {
   const procs = ctx.procs || [];
   const nomeProc = (pid) => { const p = procs.find((x) => x.id === pid); return p ? `${p.orgao || ""}${p.numero ? ` · ${p.numero}` : ""}` : "Processo"; };
   const ligados = new Set(disputas.filter((d) => d.ligado).map((d) => d.processo_id));
-  const VIG = ["participar", "proposta", "suspenso", "disputa", "julgamento", "habilitacao", "recurso", "homologacao"];
   const sessao = (pid) => procs.find((x) => x.id === pid)?.data_sessao || "9999";
-  // Na tela: ligados à mão sempre; automáticos só enquanto o processo estiver vigente (igual ao robô)
-  const lista = disputas.filter((d) => d.ligado && (d.criado_por !== "automático" || VIG.includes(procs.find((x) => x.id === d.processo_id)?.etapa)))
+  // Etapa de lances (igual ao robô, função licita-robo): entram sozinhos só os processos com sessão HOJE
+  // (ou sessão aberta, etapa "disputa") e com item cotado (com preço). Os ligados à mão ficam sempre.
+  const hojeSP = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo" }).format(new Date());
+  const diaSP = (iso) => (iso ? new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo" }).format(new Date(iso)) : null);
+  const doDia = (p) => !!p && (diaSP(p.data_sessao) === hojeSP || p.etapa === "disputa");
+  const cotados = (pid) => (resumo[pid]?.cotados || 0);
+  const lista = disputas.filter((d) => d.ligado && (d.criado_por !== "automático" || (doDia(procs.find((x) => x.id === d.processo_id)) && cotados(d.processo_id) > 0)))
     .sort((a, b) => String(sessao(a.processo_id)).localeCompare(String(sessao(b.processo_id))));
   const perto = (pid) => { const t = Date.parse(sessao(pid)); return Number.isFinite(t) && t - Date.now() < 36 * 3600e3 && Date.now() - t < 3 * 24 * 3600e3; };
   const candidatos = procs.filter((p) => p.portal === "pcp" && !ligados.has(p.id) && ["participar", "proposta", "disputa", "suspenso", "julgamento"].includes(p.etapa))
     .sort((a, b) => String(a.data_sessao || "9").localeCompare(String(b.data_sessao || "9")));
   const ultimaDecisao = (pid, n) => eventos.find((e) => e.processo_id === pid && e.numero === n && e.tipo === "decisao");
+  // Próximas sessões (7 dias) do Portal: o que vai entrar no robô no dia e o que ainda falta
+  const naLista = new Set(lista.map((d) => d.processo_id));
+  const proximas = procs.filter((p) => p.portal === "pcp" && !naLista.has(p.id) && ["analise", "participar", "proposta", "suspenso"].includes(p.etapa)
+    && p.data_sessao && Date.parse(p.data_sessao) > Date.now() - 3600e3 && Date.parse(p.data_sessao) < Date.now() + 7 * 24 * 3600e3)
+    .sort((a, b) => String(a.data_sessao).localeCompare(String(b.data_sessao)));
 
   return (
     <div className="stack">
       <div className="top">
-        <div><h1>Robô de lances · ao vivo</h1><p>O robô roda no computador da empresa (pasta robo-lances), lê a sala de disputa do Portal de Compras Públicas e mostra aqui o que faria. <b>Versão só observar: ele não dá lance.</b></p></div>
+        <div><h1>Lances</h1><p>O robô roda no computador da empresa e entra sozinho nas licitações <b>do dia</b> (Portal de Compras Públicas) que têm <b>itens com preço</b>. Ele lê a sala de disputa e mostra aqui o que faria. <b>Versão só observar: ele não dá lance.</b></p></div>
       </div>
 
       <div className="card">
@@ -156,8 +171,31 @@ export default function RoboAoVivo({ ctx }) {
         </div>
       )}
 
-      {!lista.length && <div className="card empty">Nenhum processo no robô. Os processos vigentes do Portal de Compras Públicas entram sozinhos quando o robô estiver ligado.</div>}
-      {lista.length > 0 && <p className="hint" style={{ margin: 0 }}>{lista.length} processo(s) acompanhado(s). Abertos: sessão nas próximas 36 h ou nos últimos 3 dias; os demais ficam recolhidos (clique para abrir).</p>}
+      {!lista.length && <div className="card empty"><b>Nenhuma licitação no robô hoje</b>Entram sozinhas as licitações com sessão hoje (Portal de Compras Públicas) que têm itens com preço na etapa Proposta.</div>}
+      {lista.length > 0 && <p className="hint" style={{ margin: 0 }}>{lista.length} licitação(ões) no robô hoje.</p>}
+
+      {proximas.length > 0 && (
+        <div className="card">
+          <div className="card-h"><h2>Próximas sessões</h2><small>Entram no robô sozinhas no dia, se tiverem itens com preço</small></div>
+          <div className="stack" style={{ gap: 6 }}>
+            {proximas.map((p) => {
+              const r = resumo[p.id];
+              const ok = r && r.cotados > 0;
+              const semPiso = r ? r.marcados - r.com_piso : 0;
+              return (
+                <div key={p.id} className="row-inline" style={{ justifyContent: "space-between", gap: 10, flexWrap: "wrap", borderTop: "1px solid var(--line-2)", paddingTop: 6 }}>
+                  <div style={{ minWidth: 0 }}><b>{dataHora(p.data_sessao)}</b> · {p.orgao}{p.numero ? ` · ${p.numero}` : ""}</div>
+                  <div className="row-inline" style={{ gap: 6 }}>
+                    <span className={`tag ${ok ? "ok" : "warn"}`}>{ok ? `✓ ${r.cotados} item(ns) com preço: entra no dia` : "sem itens com preço: não entra"}</span>
+                    {ok && semPiso > 0 && <span className="tag warn">{semPiso} sem valor mínimo</span>}
+                    <button type="button" className="linkbtn" onClick={() => ctx.abrir(p.id, "proposta")}>abrir proposta</button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {lista.map((d) => {
         const p = procs.find((x) => x.id === d.processo_id);

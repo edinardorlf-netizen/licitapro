@@ -773,3 +773,23 @@ alter table public.processos add column if not exists proposta_opcoes jsonb not 
 -- =====================================================================
 grant select, insert, update, delete on public.robo_arquivos to authenticated;
 create policy "admin publica versao do robo" on public.robo_arquivos for all to authenticated using (is_admin()) with check (is_admin());
+
+-- =====================================================================
+-- Migração resumo_propostas (14/11/2026): etapas "Proposta" e "Lances" (situação dos itens antes/durante a sessão)
+-- =====================================================================
+create or replace function public.resumo_propostas()
+returns table (processo_id uuid, itens int, marcados int, cotados int, sem_marca int, com_piso int, total numeric)
+language sql stable security invoker set search_path = public as $$
+  select p.id,
+    count(i.id)::int,
+    count(i.id) filter (where i.participar)::int,
+    count(i.id) filter (where i.participar and i.preco_unit is not null)::int,
+    count(i.id) filter (where i.participar and i.preco_unit is not null and coalesce(i.marca, '') = '')::int,
+    count(i.id) filter (where i.participar and i.valor_minimo is not null)::int,
+    coalesce(sum(coalesce(i.preco_total, i.preco_unit * i.quantidade)) filter (where i.participar and i.preco_unit is not null), 0)
+  from processos p
+  left join itens i on i.processo_id = p.id
+  where p.ativo and p.etapa in ('analise', 'participar', 'proposta', 'suspenso', 'disputa')
+  group by p.id;
+$$;
+grant execute on function public.resumo_propostas() to authenticated;

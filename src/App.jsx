@@ -23,6 +23,7 @@ import PropostaWord from "./PropostaWord.jsx";
 import Catalogo, { MarkupMinimo } from "./Catalogo.jsx";
 import Reequilibrio from "./Reequilibrio.jsx";
 import ContratosLancados from "./ContratosLancados.jsx";
+import PropostaEtapa from "./PropostaEtapa.jsx";
 import {
   sb, appUrl, portal, PORTAIS, ETAPAS, etapa, ATIVAS, A_LANCAR, ACOMPANHANDO, CATEGORIAS, RESULTADOS, resultado, ganhou, PAPEIS, PERMISSOES, fmtData, fmtDataCurta, fmtHora, fmtDH, diaChave, hojeChave,
   diaLongo, falta, brl, num, parseNum, fmtIn, errMsg, chamarRobo, iniciais,
@@ -295,6 +296,7 @@ const Icon = ({ name, size = 20 }) => {
     logout: <><path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3" /><path d="M10 17l5-5-5-5M15 12H4" /></>,
     search: <><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></>,
     bot: <><rect x="4" y="8" width="16" height="11" rx="3" /><path d="M12 4v4M9 13h.01M15 13h.01M9.5 16.5h5" /></>,
+    pen: <><path d="M4 20h4L19 9l-4-4L4 16v4Z" /><path d="m14 6 4 4" /></>,
     box: <><path d="M21 8 12 3 3 8v8l9 5 9-5V8Z" /><path d="m3 8 9 5 9-5M12 13v8" /></>,
     scale: <><path d="M12 3v18M7 21h10M5 7h14" /><path d="m5 7-3 6a3 3 0 0 0 6 0L5 7ZM19 7l-3 6a3 3 0 0 0 6 0l-3-6Z" /></>,
   }[name];
@@ -311,19 +313,23 @@ const PortalTag = ({ k }) => <span className="tag"><i className="pdot" style={{ 
 const EtapaTag = ({ id }) => <span className="tag" style={{ background: `${etapa(id).cor}18`, color: etapa(id).cor }}>{etapa(id).nome}</span>;
 const ResultadoTag = ({ id }) => { const r = resultado(id); return r ? <span className="tag" style={{ background: `${r.cor}18`, color: r.cor }}>{r.nome}</span> : null; };
 
+// Menu na ordem das etapas do trabalho (14/11/2026):
+// Busca → Acompanhamento → Proposta → Lances → Contratos (itens vencidos) → … → Reequilíbrio
+// (os ids antigos "radar", "processos" e "robo" ficam, para não quebrar links e permissões já dadas)
 const TABS = [
   { id: "inicio", nome: "Início", icon: "home" },
-  { id: "radar", nome: "Radar", icon: "radar" },
-  { id: "processos", nome: "Processos", icon: "folder" },
+  { id: "radar", nome: "Busca", icon: "radar" },
+  { id: "processos", nome: "Acompanhamento", icon: "folder" },
+  { id: "proposta", nome: "Proposta", icon: "pen", pc: true },
+  { id: "robo", nome: "Lances", icon: "bot" },
   { id: "contratos", nome: "Contratos", icon: "file" },
-  { id: "catalogo", nome: "Produtos", icon: "box", pc: true },
   { id: "reequilibrio", nome: "Reequilíbrio", icon: "scale", pc: true },
   { id: "agenda", nome: "Agenda", icon: "cal" },
-  { id: "robo", nome: "Robô", icon: "bot" },
+  { id: "catalogo", nome: "Produtos", icon: "box", pc: true },
   { id: "ajustes", nome: "Ajustes", icon: "cog" },
 ];
 // Permissão que libera cada aba (Ajustes sempre aparece: conta e alertas)
-const PERM_ABA = { inicio: "processos", radar: "radar", processos: "processos", contratos: "contratos", catalogo: "catalogo", reequilibrio: "reequilibrio", agenda: "processos", robo: "robo" };
+const PERM_ABA = { inicio: "processos", radar: "radar", processos: "processos", proposta: "processos", contratos: "contratos", catalogo: "catalogo", reequilibrio: "reequilibrio", agenda: "processos", robo: "robo" };
 
 /* ============================================================
    Sessão
@@ -509,6 +515,7 @@ function Painel({ session, papel, notify }) {
   const inicial = lerHash();
   const [tab, setTab] = useState(inicial.tab);
   const [procId, setProcId] = useState(inicial.proc);
+  const [abaIni, setAbaIni] = useState(null); // aba em que o processo abre (ex.: "itens" a partir da etapa Proposta)
   const [procs, setProcs] = useState(null);
   const [naoVistas, setNaoVistas] = useState({});
   const [equipe, setEquipe] = useState([]);
@@ -564,7 +571,8 @@ function Painel({ session, papel, notify }) {
     try { window.scrollTo(0, 0); } catch (e) { /* ignora */ }
   }, [tab, procId]);
 
-  const abrir = (id) => { setTab("processos"); setProcId(id); };
+  // Abre o processo sem trocar de etapa: ao voltar, a pessoa continua onde estava (Proposta, Contratos…)
+  const abrir = (id, aba) => { setAbaIni(aba || null); setProcId(id); };
   const ir = (t) => { setProcId(null); setTab(t); };
   const totalNV = Object.values(naoVistas).reduce((a, r) => a + Number(r.importantes || 0), 0);
   // celular: só monitoramento (robô, produtos e reequilíbrio ficam no computador)
@@ -578,7 +586,8 @@ function Painel({ session, papel, notify }) {
 
   let tela;
   if (!admin && !eu) tela = <div className="card empty">Carregando…</div>;
-  else if (procId && perm("processos")) tela = <Processo key={procId} id={procId} ctx={ctx} onBack={() => { setProcId(null); carregar(); }} />;
+  else if (procId && perm("processos")) tela = <Processo key={`${procId}-${abaIni || ""}`} id={procId} abaInicial={abaIni} ctx={ctx} onBack={() => { setProcId(null); setAbaIni(null); carregar(); }} />;
+  else if (tab === "proposta") tela = <PropostaEtapa ctx={ctx} />;
   else if (tab === "catalogo") tela = <Catalogo ctx={ctx} />;
   else if (tab === "reequilibrio") tela = <Reequilibrio ctx={ctx} />;
   else if (tab === "inicio") tela = <Inicio ctx={ctx} />;
@@ -1032,9 +1041,11 @@ function Processos({ ctx }) {
   }, [procs]);
 
   const daEmpresa = (procs || []).filter((p) => emp === "todas" || (emp === "sem" ? !p.empresa_id : p.empresa_id === emp));
-  const contagem = Object.fromEntries(CATEGORIAS.map((c) => [c.id, daEmpresa.filter(c.teste).length]));
+  // Etapa de acompanhamento: os finalizados com vitória passam para a etapa Contratos (só os itens vencidos)
+  const CATS = CATEGORIAS.filter((c) => c.id !== "ganhos");
+  const contagem = Object.fromEntries(CATS.map((c) => [c.id, daEmpresa.filter(c.teste).length]));
   // Sem escolha salva: abre em "Acompanhando" se houver; senão "Vamos participar".
-  const catId = (id) => CATEGORIAS.find((c) => c.id === id);
+  const catId = (id) => CATS.find((c) => c.id === id);
   const cat = catId(filtro) || (contagem.acompanhando ? catId("acompanhando") : contagem.finalizacao ? catId("finalizacao") : contagem.vamos ? catId("vamos") : catId("todos"));
   const escolher = (id) => { setFiltro(id); try { sessionStorage.setItem("lp-cat", id); } catch (e) { /* ignora */ } };
   const lista = daEmpresa.filter((p) => cat.teste(p) && (!q || `${p.orgao} ${p.municipio} ${p.numero} ${p.objeto}`.toLowerCase().includes(q.toLowerCase())));
@@ -1056,11 +1067,11 @@ function Processos({ ctx }) {
   return (
     <div className="stack">
       <div className="top">
-        <div><h1>Processos</h1><p>Licitações que a equipe está acompanhando</p></div>
+        <div><h1>Acompanhamento</h1><p>Licitações que vamos disputar: o sistema acompanha e avisa qualquer mudança ou movimentação. Os finalizados com vitória vão para <button type="button" className="linkbtn" onClick={() => ctx.ir("contratos")}>Contratos</button>.</p></div>
         {pode && <button className="btn" onClick={() => setNovo(true)}><Icon name="plus" size={17} />Acompanhar processos</button>}
       </div>
       <div className="seg cats" role="tablist">
-        {CATEGORIAS.map((c) => (
+        {CATS.map((c) => (
           <button key={c.id} role="tab" aria-selected={cat.id === c.id} className={cat.id === c.id ? "on" : ""} onClick={() => escolher(c.id)}>
             {c.nome}{contagem[c.id] ? <span className="cnt">{contagem[c.id]}</span> : null}
           </button>
@@ -1439,12 +1450,12 @@ function NovoProcesso({ ctx, onClose }) {
 /* ============================================================
    Detalhe do processo
    ============================================================ */
-function Processo({ id, ctx, onBack }) {
+function Processo({ id, ctx, onBack, abaInicial }) {
   const { pode, email, equipe, notify } = ctx;
   const [p, setP] = useState(null);
   const [movs, setMovs] = useState([]);
   const [itens, setItens] = useState([]);
-  const [aba, setAba] = useState("mov");
+  const [aba, setAba] = useState(abaInicial || "mov");
   const [filtroMov, setFiltroMov] = useState("todas");
   const [soMeus, setSoMeus] = useState(false);
   const [verificando, setVerificando] = useState(false);
@@ -1491,7 +1502,7 @@ function Processo({ id, ctx, onBack }) {
   }, [id]);
 
   // Em processos já abertos, começa pelo que estão pedindo para nós.
-  const abaEscolhida = useRef(false);
+  const abaEscolhida = useRef(!!abaInicial); // veio de uma etapa com aba definida: respeita
   useEffect(() => {
     if (abaEscolhida.current || !p) return;
     abaEscolhida.current = true;
@@ -1532,7 +1543,7 @@ function Processo({ id, ctx, onBack }) {
   const apagarNota = async (m) => { const { error } = await sb.from("movimentacoes").delete().eq("id", m.id); if (error) return notify(errMsg(error)); carregar(); };
   const excluir = async () => { const { error } = await sb.from("processos").delete().eq("id", id); if (error) return notify(errMsg(error)); notify("Processo removido do acompanhamento"); onBack(); };
 
-  if (err) return <div className="stack"><button className="back" onClick={onBack}><Icon name="left" size={18} />Processos</button><div className="card empty"><b>Não foi possível abrir</b>{err}</div></div>;
+  if (err) return <div className="stack"><button className="back" onClick={onBack}><Icon name="left" size={18} />Voltar</button><div className="card empty"><b>Não foi possível abrir</b>{err}</div></div>;
   if (!p) return <div className="card empty">Abrindo o processo…</div>;
 
   const nomeDe = (e) => (equipe.find((x) => x.email === e) || {}).nome || (e ? e.split("@")[0] : "");
@@ -1544,7 +1555,7 @@ function Processo({ id, ctx, onBack }) {
   return (
     <div className="stack">
       <div>
-        <button className="back" onClick={onBack}><Icon name="left" size={18} />Processos</button>
+        <button className="back" onClick={onBack}><Icon name="left" size={18} />Voltar</button>
         <div className="phead">
           <div className="row-inline">
             <PortalTag k={p.portal} /><EtapaTag id={p.etapa} /><ResultadoTag id={p.resultado} />{p.modalidade && <span className="tag">{p.modalidade}</span>}

@@ -54,18 +54,25 @@ async function pulso(body: any) {
   const { data: estado } = await db.from("robo_estado").select("parado_geral").eq("id", "pcp").single();
   const { data: ver } = await db.from("robo_arquivos").select("versao").order("versao", { ascending: false }).limit(1);
 
-  // Todo processo vigente do Portal de Compras Públicas entra sozinho no robô (criado_por = 'automático').
-  // Se a equipe tirar (ligado = false), ele não volta.
-  const { data: vig } = await db.from("processos").select("id").eq("portal", "pcp").eq("ativo", true).not("pcp_codigo", "is", null).in("etapa", VIGENTES);
+  // Etapa de lances (14/11/2026): entra sozinho no robô (criado_por = 'automático') só o processo do Portal de
+  // Compras Públicas com sessão HOJE (ou sessão ainda aberta, etapa "disputa") e com item cotado (com preço).
+  // O acompanhamento dos demais continua pela nuvem (função licita, a cada 2 min).
+  // Se a equipe tirar (ligado = false), ele não volta; os ligados à mão ficam.
+  const hojeSP = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo" }).format(new Date());
+  const { data: cand } = await db.from("processos").select("id,data_sessao,etapa").eq("portal", "pcp").eq("ativo", true).not("pcp_codigo", "is", null).in("etapa", VIGENTES)
+    .or(`and(data_sessao.gte.${hojeSP}T00:00:00-03:00,data_sessao.lte.${hojeSP}T23:59:59-03:00),etapa.eq.disputa`);
+  const candIds = (cand || []).map((p: any) => p.id);
+  const { data: cotados } = candIds.length
+    ? await db.from("itens").select("processo_id").in("processo_id", candIds).eq("participar", true).not("preco_unit", "is", null)
+    : { data: [] as any[] };
+  const doDia = new Set((cotados || []).map((i: any) => i.processo_id));
   const { data: todas } = await db.from("robo_disputas").select("processo_id");
   const jaTem = new Set((todas || []).map((d: any) => d.processo_id));
-  const novos = (vig || []).filter((p: any) => !jaTem.has(p.id)).map((p: any) => ({ processo_id: p.id, ligado: true, criado_por: "automático" }));
+  const novos = [...doDia].filter((id) => !jaTem.has(id)).map((id) => ({ processo_id: id, ligado: true, criado_por: "automático" }));
   if (novos.length) await db.from("robo_disputas").upsert(novos, { onConflict: "processo_id", ignoreDuplicates: true });
 
   const { data: dispTodas } = await db.from("robo_disputas").select("processo_id,ligado,modo,parado,config,criado_por").eq("ligado", true);
-  const vigentes = new Set((vig || []).map((p: any) => p.id));
-  // Os automáticos saem quando o processo deixa de ser vigente; os ligados à mão ficam.
-  const disp = (dispTodas || []).filter((d: any) => d.criado_por !== "automático" || vigentes.has(d.processo_id));
+  const disp = (dispTodas || []).filter((d: any) => d.criado_por !== "automático" || doDia.has(d.processo_id));
   const ids = disp.map((d: any) => d.processo_id);
   const disputas: any[] = [];
   if (ids.length) {
