@@ -18,7 +18,10 @@ import { decidir, CONFIG_PADRAO } from "./cerebro.js";
 import * as portal from "./portal.js";
 import { preencherProposta } from "./proposta.js";
 
-export const VERSAO = 3;
+export const VERSAO = 4;
+// v4 (14/11): o sinal ao LicitaPro sai sozinho a cada 5 s (antes saía entre rodadas de leitura; rodadas longas
+// atrasavam o sinal > 30 s e a trava "sem contato" disparava à toa) e as leituras rodam em segundo plano:
+// processos fora de sessão ocupam no máximo LEITURAS_JUNTAS vagas e sessão em andamento nunca espera na fila.
 // v3 (14/11): lê no máximo LEITURAS_JUNTAS processos ao mesmo tempo, espalha as leituras de 5 em 5 min
 // (antes, ao ligar com 69 disputas, saíam ~140 pedidos no mesmo segundo e o portal respondia 405)
 // e, se o portal limitar o acesso, segura as leituras fora de sessão por 2 minutos.
@@ -115,13 +118,19 @@ async function enviarVerificacoes() {
 }
 
 // ---------- Leitura de uma disputa + decisões ----------
+// Está na hora de ler? Fora da sessão: a cada 5 min (a nuvem também acompanha a cada 2 min). Na sessão: a cada 3 s.
+function devido(d, s) {
+  if (!d.pcp_codigo) return true; // lerDisputa avisa (uma vez por minuto) que falta o código
+  const intervalo = s.bloqueioAte && Date.now() < s.bloqueioAte ? 30000 : quente(d, s) ? 3000 : 300000;
+  if (Date.now() - s.lidoEm < intervalo) return false;
+  if (!quente(d, s) && Date.now() < pausaGeralAte) return false; // portal pediu calma: só a sessão em andamento continua
+  return true;
+}
+
 async function lerDisputa(d) {
   const s = sala(d.processo_id);
   if (!d.pcp_codigo) { erro(`cod-${d.processo_id}`, `Processo ${d.numero || ""} sem código do Portal de Compras Públicas: o robô não sabe qual sala ler.`, { processo_id: d.processo_id }); return; }
-  // Fora da sessão: a cada 5 min (a nuvem também acompanha a cada 2 min). Na sessão: a cada 3 s.
-  const intervalo = s.bloqueioAte && Date.now() < s.bloqueioAte ? 30000 : quente(d, s) ? 3000 : 300000;
-  if (Date.now() - s.lidoEm < intervalo) return;
-  if (!quente(d, s) && Date.now() < pausaGeralAte) return; // portal pediu calma: só a sessão em andamento continua
+  if (!devido(d, s)) return;
   s.lidoEm = Date.now();
   const ident = portal.identificacao(d.empresa);
   try {
@@ -365,21 +374,31 @@ async function ligado() {
   log(`Robô de lances v${VERSAO} ligado (SÓ OBSERVAR: não dá lance). Para desligar use PARAR.bat.`);
   statusTxt = "observando";
   evento({ tipo: "status", motivo: `Robô ligado (v${VERSAO}, só observar) em ${cfg.MAQUINA || os.hostname()}.` });
+  // Sinal ao LicitaPro a cada 5 s, independente das leituras (uma por vez)
+  let pulsando = false;
+  const darPulso = () => { if (pulsando) return; pulsando = true; pulso().finally(() => { pulsando = false; }); };
+  await pulso();
+  setInterval(darPulso, 5000);
+  const emLeitura = new Map(); // processo_id → quente?
   let n = 0;
   while (true) {
     if (fs.existsSync(FLAG)) { log("PARAR.bat acionado. Desligando…"); await sair(2); }
-    if (n % 5 === 0) await pulso();
     if (n % 10 === 0) try { fs.writeFileSync(path.join(AQUI, "robo.pid"), String(process.pid)); } catch { /* */ }
     const disputas = ultimoPulso?.disputas || [];
     // Disputas desligadas no app saem da memória
     for (const pid of [...salas.keys()]) if (!disputas.some((d) => d.processo_id === pid)) {
       const s = salas.get(pid); try { if (s.aba) await s.aba.close(); } catch { /* */ } salas.delete(pid);
     }
-    // Fila com no máximo LEITURAS_JUNTAS leituras simultâneas; sessões em andamento primeiro
-    const aLer = [...disputas].sort((a, b) => (quente(b, sala(b.processo_id)) ? 1 : 0) - (quente(a, sala(a.processo_id)) ? 1 : 0));
-    await Promise.all(Array.from({ length: Math.min(LEITURAS_JUNTAS, aLer.length) }, async () => {
-      for (let d; (d = aLer.shift()); ) await lerDisputa(d).catch((e) => erro(`ler-${d.processo_id}`, e.message, { processo_id: d.processo_id }));
-    }));
+    // Leituras em segundo plano: sessões em andamento sempre começam; fora de sessão, no máximo LEITURAS_JUNTAS juntas
+    for (const d of disputas) {
+      if (emLeitura.has(d.processo_id) || !devido(d, sala(d.processo_id))) continue;
+      const q = quente(d, sala(d.processo_id));
+      const frias = [...emLeitura.values()].filter((x) => !x).length;
+      if (!q && frias >= LEITURAS_JUNTAS) continue;
+      emLeitura.set(d.processo_id, q);
+      lerDisputa(d).catch((e) => erro(`ler-${d.processo_id}`, e.message, { processo_id: d.processo_id }))
+        .finally(() => emLeitura.delete(d.processo_id));
+    }
     await cuidarDoNavegador(disputas).catch((e) => erro("nav", e.message));
     if (ultimoPulso?.pedidos?.length) await atenderPedidos(ultimoPulso.pedidos);
     if (n % 2 === 0) { await enviarEventos(); await enviarVerificacoes(); }
