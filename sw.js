@@ -1,5 +1,5 @@
-/* LicitaPro · arquivos do site com rede primeiro (sempre a versão nova), cache só sem internet. */
-const CACHE = "licitapro-v21";
+/* LicitaPro Â· arquivos do site com rede primeiro (sempre a versÃ£o nova), cache sÃ³ sem internet. */
+const CACHE = "licitapro-v22";
 const CORE = ["./", "index.html", "app.js", "config.js", "manifest.webmanifest", "icons/icon-192.png"];
 self.addEventListener("install", (e) => { e.waitUntil(caches.open(CACHE).then((c) => c.addAll(CORE)).then(() => self.skipWaiting())); });
 self.addEventListener("activate", (e) => {
@@ -17,7 +17,7 @@ self.addEventListener("fetch", (e) => {
   );
 });
 
-/* Notificações do robô (aparecem no Windows/celular mesmo com o LicitaPro fechado) */
+/* NotificaÃ§Ãµes do robÃ´ (aparecem no Windows/celular mesmo com o LicitaPro fechado) */
 self.addEventListener("push", (e) => {
   let d = {};
   try { d = e.data ? e.data.json() : {}; } catch (_) { d = { titulo: "LicitaPro", corpo: e.data ? e.data.text() : "" }; }

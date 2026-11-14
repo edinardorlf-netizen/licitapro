@@ -24,6 +24,7 @@ import Catalogo, { MarkupMinimo } from "./Catalogo.jsx";
 import Reequilibrio from "./Reequilibrio.jsx";
 import ContratosLancados from "./ContratosLancados.jsx";
 import PropostaEtapa from "./PropostaEtapa.jsx";
+import Demandas from "./Demandas.jsx";
 import {
   sb, appUrl, portal, PORTAIS, ETAPAS, etapa, ATIVAS, A_LANCAR, ACOMPANHANDO, CATEGORIAS, RESULTADOS, resultado, ganhou, PAPEIS, PERMISSOES, fmtData, fmtDataCurta, fmtHora, fmtDH, diaChave, hojeChave,
   diaLongo, falta, brl, num, parseNum, fmtIn, errMsg, chamarRobo, iniciais,
@@ -298,6 +299,7 @@ const Icon = ({ name, size = 20 }) => {
     bot: <><rect x="4" y="8" width="16" height="11" rx="3" /><path d="M12 4v4M9 13h.01M15 13h.01M9.5 16.5h5" /></>,
     pen: <><path d="M4 20h4L19 9l-4-4L4 16v4Z" /><path d="m14 6 4 4" /></>,
     box: <><path d="M21 8 12 3 3 8v8l9 5 9-5V8Z" /><path d="m3 8 9 5 9-5M12 13v8" /></>,
+    truck: <><path d="M3 6h11v10H3zM14 10h4l3 3v3h-7" /><circle cx="7" cy="17.5" r="1.5" /><circle cx="17" cy="17.5" r="1.5" /></>,
     scale: <><path d="M12 3v18M7 21h10M5 7h14" /><path d="m5 7-3 6a3 3 0 0 0 6 0L5 7ZM19 7l-3 6a3 3 0 0 0 6 0l-3-6Z" /></>,
   }[name];
   return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{p}</svg>;
@@ -323,13 +325,14 @@ const TABS = [
   { id: "proposta", nome: "Proposta", icon: "pen", pc: true },
   { id: "robo", nome: "Lances", icon: "bot" },
   { id: "contratos", nome: "Contratos", icon: "file" },
+  { id: "demandas", nome: "Demandas", icon: "truck" },
   { id: "reequilibrio", nome: "Reequilíbrio", icon: "scale", pc: true },
   { id: "agenda", nome: "Agenda", icon: "cal" },
   { id: "catalogo", nome: "Produtos", icon: "box", pc: true },
   { id: "ajustes", nome: "Ajustes", icon: "cog" },
 ];
 // Permissão que libera cada aba (Ajustes sempre aparece: conta e alertas)
-const PERM_ABA = { inicio: "processos", radar: "radar", processos: "processos", proposta: "processos", contratos: "contratos", catalogo: "catalogo", reequilibrio: "reequilibrio", agenda: "processos", robo: "robo" };
+const PERM_ABA = { inicio: "processos", radar: "radar", processos: "processos", proposta: "processos", contratos: "contratos", demandas: "contratos", catalogo: "catalogo", reequilibrio: "reequilibrio", agenda: "processos", robo: "robo" };
 
 /* ============================================================
    Sessão
@@ -594,6 +597,7 @@ function Painel({ session, papel, notify }) {
   else if (tab === "radar") tela = <Radar ctx={ctx} />;
   else if (tab === "processos") tela = <Processos ctx={ctx} />;
   else if (tab === "contratos") tela = <Contratos ctx={ctx} />;
+  else if (tab === "demandas") tela = <Demandas ctx={ctx} />;
   else if (tab === "agenda") tela = <Agenda ctx={ctx} />;
   else if (tab === "robo") tela = <RoboTela ctx={ctx} />;
   else tela = <Ajustes ctx={ctx} />;

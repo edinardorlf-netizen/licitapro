@@ -793,3 +793,31 @@ language sql stable security invoker set search_path = public as $$
   group by p.id;
 $$;
 grant execute on function public.resumo_propostas() to authenticated;
+-- =====================================================================
+-- Migração ordens_fornecimento (14/11/2026) · etapa "Demandas"
+-- Ordens de fornecimento por ata/contrato (itens vencidos de um processo).
+-- itens_ganhos.quantidade_entregue = soma das ordens (trigger ordem_itens_saldo);
+-- saldo = quantidade - quantidade_entregue (o Reequilíbrio usa o mesmo saldo).
+-- =====================================================================
+create table if not exists public.ordens_fornecimento (
+  id uuid primary key default gen_random_uuid(),
+  processo_id uuid not null references public.processos(id) on delete cascade,
+  empresa_id uuid references public.empresas(id) on delete set null,
+  numero text not null check (char_length(trim(numero)) between 1 and 60),
+  data date not null default ((now() at time zone 'America/Sao_Paulo')::date),
+  lancado_em timestamptz not null default now(),
+  lancado_por text default lower(auth.jwt()->>'email'),
+  obs text
+);
+create index if not exists ordens_proc_idx on public.ordens_fornecimento (processo_id, lancado_em desc);
+create table if not exists public.ordem_itens (
+  id uuid primary key default gen_random_uuid(),
+  ordem_id uuid not null references public.ordens_fornecimento(id) on delete cascade,
+  ganho_id uuid not null references public.itens_ganhos(id) on delete cascade,
+  quantidade numeric(16,4) not null check (quantidade > 0),
+  unique (ordem_id, ganho_id)
+);
+create index if not exists ordem_itens_ganho_idx on public.ordem_itens (ganho_id);
+-- function ordem_itens_saldo() (security definer): recalcula itens_ganhos.quantidade_entregue do item afetado
+-- trigger ordem_itens_saldo after insert or update or delete on ordem_itens
+-- RLS: ver = is_equipe() and tem_perm('contratos'); lançar/apagar = pode_editar() and tem_perm('contratos')
