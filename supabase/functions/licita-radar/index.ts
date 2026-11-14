@@ -67,9 +67,14 @@ function portalDe(link?: string | null, sistema?: string | null): string {
   return "outro";
 }
 
-async function carregarConfig() {
-  const { data: cfg } = await db.from("config").select("*").eq("id", 1).single();
+async function carregarConfig(contaId: string) {
+  const { data: cfg } = await db.from("config").select("*").eq("conta_id", contaId).maybeSingle();
   return { cfg: cfg || { uf: "MG", ufs: ["MG"], modalidades: [6, 8] } };
+}
+// Cada conta (empresa cliente) tem o seu radar: estados, categorias e palavras dela.
+async function contasAtivas(): Promise<string[]> {
+  const { data } = await db.from("contas").select("id").eq("ativa", true).order("criado_em");
+  return (data || []).map((c: any) => c.id);
 }
 // A classificação (categorias marcadas + palavras extras) é feita no banco, pelo gatilho
 // editais_classificar, para valer igual aqui e quando a equipe muda as categorias no app.
@@ -133,8 +138,25 @@ async function detalharEdital(ed: { id: string; cnpj: string; ano: number; seq: 
 }
 
 // ---------- Radar ----------
-async function radar(deadline: number) {
-  const { cfg } = await carregarConfig();
+// Todas as contas, dividindo o tempo; a ordem gira a cada hora para nenhuma ficar sempre por último.
+async function radarTodas(deadline: number) {
+  const contas = await contasAtivas();
+  if (!contas.length) return { contas: 0 };
+  const ini = new Date().getUTCHours() % contas.length;
+  const ordem = [...contas.slice(ini), ...contas.slice(0, ini)];
+  const out: any[] = [];
+  for (let i = 0; i < ordem.length; i++) {
+    const resta = deadline - Date.now();
+    if (resta < 40_000) { out.push({ conta: ordem[i], parcial: true, aviso: "sem tempo nesta rodada" }); continue; }
+    const fatia = Date.now() + Math.max(40_000, Math.floor(resta / (ordem.length - i)));
+    try { out.push({ conta: ordem[i], ...(await radar(ordem[i], Math.min(deadline, fatia))) }); }
+    catch (e) { out.push({ conta: ordem[i], erro: String((e as Error).message || e) }); if (e instanceof Limite) break; }
+  }
+  return { contas: out };
+}
+
+async function radar(contaId: string, deadline: number) {
+  const { cfg } = await carregarConfig(contaId);
   const hoje = new Date();
   const ontem = new Date(hoje.getTime() - 24 * 3600e3);
   let lidos = 0, relevantes = 0, paginas = 0, detalhados = 0, aviso = "";
@@ -165,6 +187,7 @@ async function radar(deadline: number) {
         if (!lista.length) break;
         const linhas = lista.map((d) => {
           return {
+            conta_id: contaId,
             controle_pncp: d.numeroControlePNCP,
             cnpj: d.orgaoEntidade?.cnpj,
             ano: d.anoCompra,
@@ -193,25 +216,27 @@ async function radar(deadline: number) {
           };
         });
         lidos += linhas.length;
-        const { data: salvos, error } = await db.from("editais").upsert(linhas, { onConflict: "controle_pncp" }).select("relevante");
+        const { data: salvos, error } = await db.from("editais").upsert(linhas, { onConflict: "conta_id,controle_pncp" }).select("relevante");
         relevantes += (salvos || []).filter((x) => x.relevante).length;
         if (error) throw new Error(`Erro ao salvar editais: ${error.message}`);
         if (pagina >= (res.totalPaginas || 1)) break;
       }
     }
   }
-  const d = await documentos(deadline);
+  const d = await documentos(deadline, contaId);
   detalhados = d.detalhados; aviso = d.aviso;
   return { lidos, relevantes, paginas, detalhados, ...(parcial ? { parcial: true } : {}), ...(aviso ? { aviso } : {}) };
 }
 
 // Documentos e itens dos relevantes ainda abertos: primeiro os nunca buscados, depois os
 // buscados há mais de 24 h (para pegar documentos novos e retificações).
-async function documentos(deadline: number) {
+async function documentos(deadline: number, contaId?: string) {
   let detalhados = 0, aviso = "";
   const agora = new Date().toISOString();
   const ontem = new Date(Date.now() - 24 * 3600e3).toISOString();
-  const { data: pend } = await db.from("editais").select("id,cnpj,ano,seq,detalhe_em")
+  let q = db.from("editais").select("id,cnpj,ano,seq,detalhe_em");
+  if (contaId) q = q.eq("conta_id", contaId);
+  const { data: pend } = await q
     .eq("relevante", true).neq("status", "descartado")
     .or(`detalhe_em.is.null,detalhe_em.lt.${ontem}`)
     .gte("encerramento_propostas", agora)
@@ -235,7 +260,7 @@ Deno.serve(async (req) => {
       const chave = req.headers.get("x-cron-key") || "";
       const { data: seg } = await db.from("segredos").select("valor").eq("chave", "cron").maybeSingle();
       if (!seg || chave !== seg.valor) return json({ erro: "não autorizado" }, 401);
-      if (tarefa === "radar") return json(await radar(deadline));
+      if (tarefa === "radar") return json(await radarTodas(deadline));
       if (tarefa === "documentos") return json(await documentos(deadline));
       return json({ erro: "tarefa desconhecida" }, 400);
     }
@@ -243,18 +268,18 @@ Deno.serve(async (req) => {
     const { data: u } = await db.auth.getUser(token);
     const email = (u?.user?.email || "").toLowerCase();
     if (!email) return json({ erro: "Faça login novamente." }, 401);
-    const { data: membro } = await db.from("equipe").select("papel,ativo").eq("email", email).maybeSingle();
-    if (!membro || !membro.ativo) return json({ erro: "Seu acesso ainda não foi liberado pelo administrador." }, 403);
+    const { data: membro } = await db.from("equipe").select("papel,ativo,conta_id,contas(ativa)").eq("email", email).maybeSingle();
+    if (!membro || !membro.ativo || !(membro as any).contas?.ativa) return json({ erro: "Seu acesso ainda não foi liberado pelo administrador." }, 403);
 
     const body = await req.json().catch(() => ({}));
     if (body.acao === "edital") {
-      const { data: ed } = await db.from("editais").select("id,cnpj,ano,seq").eq("id", String(body.id || "")).maybeSingle();
+      const { data: ed } = await db.from("editais").select("id,cnpj,ano,seq").eq("id", String(body.id || "")).eq("conta_id", membro.conta_id).maybeSingle();
       if (!ed) return json({ erro: "Edital não encontrado." }, 404);
       return json({ edital: await detalharEdital(ed) });
     }
     if (body.acao === "radar") {
       if (membro.papel === "acompanha") return json({ erro: "Seu perfil não pode rodar o radar." }, 403);
-      return json(await radar(deadline));
+      return json(await radar(membro.conta_id, deadline));
     }
     return json({ erro: "Ação desconhecida." }, 400);
   } catch (e) {

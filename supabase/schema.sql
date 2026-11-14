@@ -838,3 +838,552 @@ create index if not exists ordem_itens_ganho_idx on public.ordem_itens (ganho_id
 alter table public.processos add column if not exists documentos_edital jsonb;   -- [{nome,categoria,item,validade,status,obs,trecho,confirmar}] → aba Documentos da planilha
 alter table public.processos add column if not exists documentos_lidos_em timestamptz;
 alter table public.processos add column if not exists edital_resumo jsonb;       -- {arquivo,paginas,parcial,pontos:[{grupo,titulo,valor,item,pagina,trecho}],faltou:[]}
+-- =====================================================================
+-- CONTAS (14/11/2026): cada empresa cliente isolada, login por NOME + senha (igual ao LojaPro)
+-- Migrações: contas_1_tabelas_e_conta_id, contas_2_funcoes, contas_3_regras (texto completo abaixo).
+-- - contas (codigo único, nome, logo, ativa, robo_hash) e auraxis_admins (quem cria contas; o dono atual foi
+--   copiado de config.dono, sem e-mail neste arquivo).
+-- - conta_id em todas as tabelas da conta; dados que já existiam foram para a conta 'mirafarma'.
+-- - Regra restritiva "so a minha conta" em todas elas: conta_id = minha_conta().
+-- - Filhos herdam a conta do pai (gatilho a_conta / conta_do_pai); processos pela empresa ou edital (processos_conta).
+-- - config, robo_estado e radar_categorias passaram a ter uma linha (ou cópia) por conta.
+-- - Login por nome: e-mail interno <nome>.<codigo>@contas.licitapro.invalid, criado pela função licita-contas
+--   (equipe.login, equipe.trocar_senha, equipe.uid). RPCs: conta_publica, meu_acesso, senha_criada,
+--   criar_conta_dados e uid_por_email (só serviço). Telegram: segredos 'telegram_token:<conta_id>'.
+-- =====================================================================
+-- =====================================================================
+-- Contas (empresas clientes) — cada cliente isolado, como as lojas do LojaPro
+-- Parte 1: tabelas novas, conta_id em tudo (dados atuais → conta "mirafarma"), chaves únicas por conta
+-- =====================================================================
+create table if not exists public.contas (
+  id uuid primary key default gen_random_uuid(),
+  codigo text not null unique check (codigo ~ '^[a-z0-9]{3,30}$'),
+  nome text not null check (char_length(trim(nome)) between 2 and 120),
+  cidade text,
+  uf text,
+  logo text,
+  ativa boolean not null default true,
+  robo_hash text,
+  criado_em timestamptz not null default now(),
+  criado_por text
+);
+alter table public.contas enable row level security;
+
+-- Administradores Auraxis (quem instala e cria as contas). Só a função licita-contas lê.
+create table if not exists public.auraxis_admins (
+  email text primary key check (email = lower(email)),
+  criado_em timestamptz not null default now()
+);
+alter table public.auraxis_admins enable row level security;
+
+insert into public.contas (codigo, nome, uf, criado_por) values ('mirafarma', 'Mirafarma', 'MG', 'migração')
+on conflict (codigo) do nothing;
+-- o dono atual vira administrador Auraxis (e-mail vem do banco, não do código)
+insert into public.auraxis_admins (email) select lower(dono) from public.config where dono is not null on conflict do nothing;
+-- chave do robô de lances passa para a conta
+update public.contas set robo_hash = (select valor from public.segredos where chave = 'robo_lances_hash') where codigo = 'mirafarma';
+
+-- equipe: login por nome dentro da conta
+alter table public.equipe add column if not exists login text;
+alter table public.equipe add column if not exists trocar_senha boolean not null default false;
+alter table public.equipe add column if not exists uid uuid;
+
+do $$
+declare
+  c uuid := (select id from public.contas where codigo = 'mirafarma');
+  t text;
+begin
+  foreach t in array array[
+    'equipe','config','empresas','acessos','empresa_proposta','modelos_documentos','palavras','radar_categorias','editais',
+    'processos','itens','movimentacoes','itens_ganhos','contratos','ordens_fornecimento','ordem_itens','produtos','produto_custos',
+    'robo_estado','robo_disputas','robo_itens','robo_eventos','robo_pedidos','robo_capturas']
+  loop
+    execute format('alter table public.%I add column if not exists conta_id uuid references public.contas(id) on delete cascade', t);
+    execute format('alter table public.%I disable trigger user', t);
+    execute format('update public.%I set conta_id = %L where conta_id is null', t, c);
+    execute format('alter table public.%I enable trigger user', t);
+    execute format('alter table public.%I alter column conta_id set not null', t);
+    execute format('create index if not exists %I on public.%I (conta_id)', t || '_conta_idx', t);
+  end loop;
+end $$;
+
+-- chaves únicas passam a valer dentro de cada conta
+alter table public.config drop constraint if exists config_pkey;
+alter table public.config drop constraint if exists config_id_check;
+alter table public.config add primary key (conta_id);
+
+alter table public.robo_estado drop constraint if exists robo_estado_pkey;
+alter table public.robo_estado add primary key (conta_id, id);
+
+alter table public.radar_categorias drop constraint if exists radar_categorias_pkey;
+alter table public.radar_categorias add primary key (conta_id, id);
+
+alter table public.editais drop constraint if exists editais_controle_pncp_key;
+alter table public.editais add constraint editais_conta_controle_key unique (conta_id, controle_pncp);
+
+alter table public.processos drop constraint if exists processos_controle_pncp_key;
+alter table public.processos drop constraint if exists processos_pcp_codigo_key;
+alter table public.processos add constraint processos_conta_controle_key unique (conta_id, controle_pncp);
+alter table public.processos add constraint processos_conta_pcp_key unique (conta_id, pcp_codigo);
+
+alter table public.palavras drop constraint if exists palavras_termo_tipo_key;
+alter table public.palavras add constraint palavras_conta_termo_tipo_key unique (conta_id, termo, tipo);
+
+alter table public.empresas drop constraint if exists empresas_cnpj_key;
+alter table public.empresas add constraint empresas_conta_cnpj_key unique (conta_id, cnpj);
+
+drop index if exists public.contratos_pncp_idx;
+create unique index if not exists contratos_pncp_idx on public.contratos (conta_id, pncp_controle) where pncp_controle is not null;
+
+create unique index if not exists equipe_conta_login_idx on public.equipe (conta_id, login) where login is not null;
+
+-- telegram passa a ser por conta (hoje não há token gravado; se houver, vai para a Mirafarma)
+update public.segredos set chave = 'telegram_token:' || (select id from public.contas where codigo = 'mirafarma') where chave = 'telegram_token';
+
+-- =====================================================================
+-- Contas · Parte 2: quem sou eu (conta), permissões dentro da conta, preenchimento automático da conta
+-- =====================================================================
+create or replace function public.minha_conta()
+returns uuid language sql stable security definer set search_path = public as $$
+  select e.conta_id from equipe e join contas c on c.id = e.conta_id and c.ativa
+  where e.email = lower(coalesce(auth.jwt()->>'email', '')) and e.ativo;
+$$;
+
+create or replace function public.meu_papel()
+returns text language sql stable security definer set search_path = public as $$
+  select e.papel from equipe e join contas c on c.id = e.conta_id and c.ativa
+  where e.email = lower(coalesce(auth.jwt()->>'email', '')) and e.ativo;
+$$;
+
+create or replace function public.is_admin()
+returns boolean language sql stable security definer set search_path = public as $$
+  select exists (
+    select 1 from equipe e join contas k on k.id = e.conta_id and k.ativa
+    left join config c on c.conta_id = e.conta_id
+    where e.email = lower(coalesce(auth.jwt()->>'email', '')) and e.ativo and e.papel = 'admin'
+      and (c.dono is null or e.email = lower(c.dono))
+  );
+$$;
+
+create or replace function public.tem_perm(p text)
+returns boolean language sql stable security definer set search_path = public as $$
+  select public.is_admin() or exists (
+    select 1 from equipe e join contas k on k.id = e.conta_id and k.ativa
+    where e.email = lower(coalesce(auth.jwt()->>'email', '')) and e.ativo
+      and coalesce((e.permissoes->>p)::boolean, false)
+  );
+$$;
+
+create or replace function public.is_auraxis()
+returns boolean language sql stable security definer set search_path = public as $$
+  select exists (select 1 from auraxis_admins where email = lower(coalesce(auth.jwt()->>'email', '')));
+$$;
+
+-- o dono de cada conta (config.dono) é o único administrador dela
+create or replace function public.equipe_guarda()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare d text;
+begin
+  select lower(dono) into d from config where conta_id = new.conta_id;
+  if new.papel = 'admin' and d is not null and lower(new.email) <> d then
+    raise exception 'Somente o dono do sistema pode ser administrador';
+  end if;
+  if tg_op = 'UPDATE' and d is not null and lower(old.email) = d and (new.papel <> 'admin' or not new.ativo or lower(new.email) <> d) then
+    raise exception 'O acesso do dono do sistema não pode ser alterado';
+  end if;
+  if tg_op = 'UPDATE' and new.conta_id is distinct from old.conta_id then
+    raise exception 'Não é possível mudar a pessoa de conta';
+  end if;
+  return new;
+end $$;
+
+-- Filhos herdam a conta do pai (processo, empresa, produto, ordem). Assim as funções na nuvem
+-- não precisam informar a conta, e ninguém pendura um item no processo de outra conta.
+create or replace function public.conta_do_pai()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare v uuid; pid text := to_jsonb(new)->>tg_argv[1];
+begin
+  if pid is not null then
+    execute format('select conta_id from public.%I where id = $1', tg_argv[0]) into v using pid::uuid;
+    if v is not null then new.conta_id := v; end if;
+  end if;
+  if new.conta_id is null then new.conta_id := public.minha_conta(); end if;
+  return new;
+end $$;
+
+do $$
+declare r record;
+begin
+  for r in select * from (values
+    ('itens','processos','processo_id'), ('movimentacoes','processos','processo_id'), ('itens_ganhos','processos','processo_id'),
+    ('contratos','processos','processo_id'), ('ordens_fornecimento','processos','processo_id'),
+    ('robo_disputas','processos','processo_id'), ('robo_itens','processos','processo_id'), ('robo_eventos','processos','processo_id'),
+    ('robo_pedidos','processos','processo_id'), ('robo_capturas','processos','processo_id'),
+    ('ordem_itens','ordens_fornecimento','ordem_id'), ('produto_custos','produtos','produto_id'),
+    ('acessos','empresas','empresa_id'), ('empresa_proposta','empresas','empresa_id'), ('modelos_documentos','empresas','empresa_id')
+  ) v(t, pai, col) loop
+    execute format('drop trigger if exists a_conta on public.%I', r.t);
+    execute format('create trigger a_conta before insert or update of %I on public.%I for each row execute function public.conta_do_pai(%L, %L)', r.col, r.t, r.pai, r.col);
+  end loop;
+end $$;
+
+-- Processo: conta de quem cadastra; pela função na nuvem, a da empresa ou a do edital
+create or replace function public.processos_conta()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare v uuid;
+begin
+  if new.conta_id is null and new.empresa_id is not null then select conta_id into new.conta_id from empresas where id = new.empresa_id; end if;
+  if new.conta_id is null and new.edital_id is not null then select conta_id into new.conta_id from editais where id = new.edital_id; end if;
+  if new.empresa_id is not null then
+    select conta_id into v from empresas where id = new.empresa_id;
+    if v is distinct from new.conta_id then raise exception 'Empresa de outra conta'; end if;
+  end if;
+  if new.edital_id is not null then
+    select conta_id into v from editais where id = new.edital_id;
+    if v is distinct from new.conta_id then raise exception 'Edital de outra conta'; end if;
+  end if;
+  return new;
+end $$;
+drop trigger if exists a_conta on public.processos;
+create trigger a_conta before insert or update of conta_id, empresa_id, edital_id on public.processos for each row execute function public.processos_conta();
+
+-- Raízes: a conta de quem grava (no app); as funções na nuvem informam a conta
+do $$
+declare t text;
+begin
+  foreach t in array array['equipe','config','empresas','palavras','radar_categorias','editais','processos','produtos','robo_estado',
+    'itens','movimentacoes','itens_ganhos','contratos','ordens_fornecimento','ordem_itens','produto_custos','robo_disputas','robo_itens',
+    'robo_eventos','robo_pedidos','robo_capturas','acessos','empresa_proposta','modelos_documentos']
+  loop
+    execute format('alter table public.%I alter column conta_id set default public.minha_conta()', t);
+  end loop;
+end $$;
+
+-- Classificação do radar: categorias e palavras da conta do edital
+create or replace function public.editais_classificar()
+returns trigger language plpgsql set search_path = public as $$
+declare
+  o text := lp_norm(new.objeto);
+  bate text[];
+begin
+  select coalesce(array_agg(distinct c.id), '{}'), coalesce(array_agg(distinct t), '{}')
+    into new.categorias, bate
+    from radar_categorias c, unnest(c.termos) t
+   where c.conta_id = new.conta_id and c.ativa and position(' ' || t in o) > 0;
+  bate := bate || coalesce(array(select p.termo from palavras p where p.conta_id = new.conta_id and p.tipo = 'incluir' and position(rtrim(lp_norm(p.termo)) in o) > 0), '{}');
+  new.termos := array(select distinct x from unnest(bate) x order by 1);
+  new.relevante := cardinality(new.termos) > 0 and not exists (
+    select 1 from palavras p
+     where p.conta_id = new.conta_id and p.tipo = 'excluir' and position(rtrim(lp_norm(p.termo)) in o) > 0
+       and not exists (select 1 from unnest(new.categorias) cid, radar_categorias c, unnest(c.termos) t
+                        where c.conta_id = new.conta_id and c.id = cid and position(' ' || t in o) > 0
+                          and (position(trim(lp_norm(p.termo)) in t) > 0 or position(t in trim(lp_norm(p.termo))) > 0))
+  );
+  return new;
+end $$;
+
+-- ---------- RPCs que passam por cima das regras: agora limitadas à conta ----------
+create or replace function public.acessos_status()
+returns table(id uuid, empresa_id uuid, portal text, usuario text, observacao text, atualizado_em timestamptz, atualizado_por text, tem_senha boolean, sinc_em timestamptz, sinc_ok boolean, sinc_msg text, hist_em timestamptz, hist_msg text)
+language sql stable security definer set search_path = public as $$
+  select a.id, a.empresa_id, a.portal, a.usuario, a.observacao, a.atualizado_em, a.atualizado_por, a.senha_id is not null, a.sinc_em, a.sinc_ok, a.sinc_msg, a.hist_em, a.hist_msg
+  from acessos a where public.pode_editar() and a.conta_id = public.minha_conta() order by a.portal;
+$$;
+
+create or replace function public.aplicar_agrupamento(p_grupos jsonb)
+returns integer language plpgsql security definer set search_path = public as $$
+declare g jsonb; pid uuid; n int := 0; c uuid := public.minha_conta();
+begin
+  if not (public.pode_editar() and public.tem_perm('catalogo')) then raise exception 'Sem permissão para o catálogo'; end if;
+  for g in select * from jsonb_array_elements(p_grupos) loop
+    select id into pid from produtos where conta_id = c and chaves @> array[g->>'chave'] limit 1;
+    if pid is null then
+      insert into produtos (conta_id, nome, unidade, chaves) values (c, left(g->>'nome', 200), g->>'unidade', array[g->>'chave']) returning id into pid;
+      n := n + 1;
+    end if;
+    update itens set produto_id = pid where conta_id = c and produto_id is null and id in (select (jsonb_array_elements_text(coalesce(g->'itens', '[]'::jsonb)))::uuid);
+    update itens_ganhos set produto_id = pid where conta_id = c and produto_id is null and id in (select (jsonb_array_elements_text(coalesce(g->'ganhos', '[]'::jsonb)))::uuid);
+  end loop;
+  return n;
+end $$;
+
+create or replace function public.definir_telegram(p_token text, p_chat text, p_ativo boolean)
+returns void language plpgsql security definer set search_path = public as $$
+declare c uuid := public.minha_conta();
+begin
+  if not public.is_admin() or c is null then raise exception 'Apenas o administrador pode configurar os avisos'; end if;
+  if p_token is not null and length(trim(p_token)) > 0 then
+    insert into segredos (chave, valor) values ('telegram_token:' || c, trim(p_token))
+    on conflict (chave) do update set valor = excluded.valor;
+  end if;
+  update config set telegram_chat_id = nullif(trim(coalesce(p_chat, '')), ''), telegram_ativo = coalesce(p_ativo, false), atualizado_em = now() where conta_id = c;
+end $$;
+
+create or replace function public.telegram_configurado()
+returns boolean language sql stable security definer set search_path = public as $$
+  select public.is_equipe() and exists (select 1 from segredos where chave = 'telegram_token:' || public.minha_conta());
+$$;
+
+create or replace function public.juntar_produtos(p_para uuid, p_de uuid[])
+returns void language plpgsql security definer set search_path = public as $$
+declare c uuid := public.minha_conta();
+begin
+  if not (public.pode_editar() and public.tem_perm('catalogo')) then raise exception 'Sem permissão para o catálogo'; end if;
+  p_de := array_remove(p_de, p_para);
+  if exists (select 1 from produtos where (id = p_para or id = any(p_de)) and conta_id is distinct from c) then raise exception 'Produto de outra conta'; end if;
+  update itens set produto_id = p_para where conta_id = c and produto_id = any(p_de);
+  update itens_ganhos set produto_id = p_para where conta_id = c and produto_id = any(p_de);
+  update produto_custos set produto_id = p_para where conta_id = c and produto_id = any(p_de);
+  update produtos set chaves = (select array_agg(distinct x) from (select unnest(chaves) x from produtos where conta_id = c and (id = p_para or id = any(p_de))) s) where id = p_para and conta_id = c;
+  delete from produtos where conta_id = c and id = any(p_de);
+end $$;
+
+create or replace function public.marcar_visto(p_ids uuid[] default null)
+returns void language sql security definer set search_path = public as $$
+  insert into vistos (email, processo_id, visto_em)
+  select lower(auth.jwt()->>'email'), p.id, now()
+  from processos p
+  where public.is_equipe() and p.conta_id = public.minha_conta() and (p_ids is null or p.id = any(p_ids))
+  on conflict (email, processo_id) do update set visto_em = now();
+$$;
+
+create or replace function public.nao_vistas()
+returns table(processo_id uuid, qtd bigint, importantes bigint)
+language sql stable security definer set search_path = public as $$
+  select m.processo_id, count(*), count(*) filter (where m.importante)
+  from movimentacoes m
+  left join vistos v on v.processo_id = m.processo_id and v.email = lower(auth.jwt()->>'email')
+  where public.is_equipe() and m.conta_id = public.minha_conta() and not m.historico and m.created_at > coalesce(v.visto_em, '-infinity'::timestamptz)
+  group by m.processo_id;
+$$;
+
+create or replace function public.pedidos_sala(p_id uuid default null, p_dias integer default 30)
+returns table(processo_id uuid, mov_id uuid, ocorrido_em timestamptz, autor text, texto text, para_nos boolean, itens_citados integer[])
+language sql stable security definer set search_path = public as $$
+  with nossos as (
+    select pr.id, coalesce(array_agg(i.numero) filter (where i.participar or i.nosso_arremata or i.nosso_vence), '{}') nums,
+      array_remove(array[upper(unaccent(e.nome))] || coalesce(string_to_array(upper(unaccent(e.apelidos)), ','), '{}')
+        || (select coalesce(array_agg(upper(unaccent(x.nome))), '{}') from empresas x where pr.empresa_id is null and x.conta_id = pr.conta_id), null) nomes
+    from processos pr left join itens i on i.processo_id = pr.id left join empresas e on e.id = pr.empresa_id
+    where (public.is_equipe() and public.tem_perm('processos')) and pr.conta_id = public.minha_conta() and (p_id is null or pr.id = p_id)
+    group by pr.id, pr.conta_id, pr.empresa_id, e.nome, e.apelidos
+  ), msgs as (
+    select m.processo_id, m.id, m.ocorrido_em, m.autor, m.detalhe,
+      array(select distinct (x[1])::int from regexp_matches(m.detalhe, 'ite(?:m|ns)\s*(?:n[º°o.]*\s*)?0*(\d{1,4})', 'gi') x) cit
+    from movimentacoes m
+    where m.tipo = 'chat' and m.conta_id = public.minha_conta() and m.ocorrido_em > now() - make_interval(days => p_dias)
+      and (p_id is null or m.processo_id = p_id)
+      and coalesce(m.autor,'') !~* '^F\.'
+      and m.detalhe !~* '(tem como novo arrematante|foi habilitado e declarado vencedor|foi aberto para lances|foi encerrado|proposta readequada do item .* foi anexada)'
+      and m.detalhe ~* '(solicit|envi[ae]|anex|convoc|dilig|apresent|readequ|prazo|regulariz|esclarec|amostra|cat[aá]logo|ficha t[eé]cnica|laudo|registro|declara|habilita|inabilit|desclassific|recus|documenta|negocia|contraproposta|melhor oferta|valor de refer)'
+  )
+  select ms.processo_id, ms.id, ms.ocorrido_em, ms.autor, ms.detalhe,
+    (ms.cit && n.nums) or exists (select 1 from unnest(n.nomes) nm where length(trim(nm)) > 3 and upper(unaccent(ms.detalhe)) like '%' || trim(nm) || '%'),
+    ms.cit
+  from msgs ms join nossos n on n.id = ms.processo_id
+  order by ms.ocorrido_em desc;
+$$;
+
+create or replace function public.reclassificar_editais()
+returns integer language plpgsql security definer set search_path = public as $$
+declare n int; c uuid := public.minha_conta();
+begin
+  update editais set objeto = objeto where (c is null or conta_id = c) and (encerramento_propostas is null or encerramento_propostas >= now() - interval '1 day');
+  select count(*) into n from editais where (c is null or conta_id = c) and relevante and status = 'novo' and encerramento_propostas >= now();
+  return n;
+end $$;
+
+create or replace function public.remover_acesso(p_id uuid)
+returns void language plpgsql security definer set search_path = public, vault as $$
+declare v_senha uuid;
+begin
+  if not public.is_admin() then raise exception 'Apenas o administrador pode remover acessos'; end if;
+  select senha_id into v_senha from acessos where id = p_id and conta_id = public.minha_conta();
+  if not found then raise exception 'Acesso não encontrado'; end if;
+  delete from acessos where id = p_id;
+  if v_senha is not null then delete from vault.secrets where id = v_senha; end if;
+end $$;
+
+create or replace function public.resumo_acompanhando()
+returns table(processo_id uuid, itens_nossos integer, arrematando integer, vencendo integer, pedidos_nossos integer, ultimo_pedido text, ultimo_pedido_em timestamptz)
+language sql stable security definer set search_path = public as $$
+  with it as (
+    select i.processo_id,
+      count(*) filter (where i.participar or i.nosso_arremata or i.nosso_vence)::int a,
+      count(*) filter (where i.nosso_arremata)::int b,
+      count(*) filter (where i.nosso_vence)::int c
+    from itens i where (public.is_equipe() and public.tem_perm('processos')) and i.conta_id = public.minha_conta() group by 1
+  ), pd as (
+    select distinct on (s.processo_id) s.processo_id, s.texto, s.ocorrido_em,
+      count(*) over (partition by s.processo_id)::int n
+    from public.pedidos_sala(null, 30) s where s.para_nos
+    order by s.processo_id, s.ocorrido_em desc
+  )
+  select p.id, coalesce(it.a,0), coalesce(it.b,0), coalesce(it.c,0), coalesce(pd.n,0), pd.texto, pd.ocorrido_em
+  from processos p left join it on it.processo_id = p.id left join pd on pd.processo_id = p.id
+  where (public.is_equipe() and public.tem_perm('processos')) and p.conta_id = public.minha_conta();
+$$;
+
+create or replace function public.salvar_acesso(p_empresa uuid, p_portal text, p_usuario text, p_senha text, p_obs text)
+returns uuid language plpgsql security definer set search_path = public, vault as $$
+declare
+  v_id uuid; v_senha uuid; v_email text := lower(coalesce(auth.jwt()->>'email', ''));
+begin
+  if not public.is_admin() then raise exception 'Apenas o administrador pode cadastrar acessos'; end if;
+  if not exists (select 1 from empresas where id = p_empresa and conta_id = public.minha_conta()) then raise exception 'Empresa não encontrada'; end if;
+  insert into acessos (empresa_id, portal, usuario, observacao, atualizado_em, atualizado_por)
+  values (p_empresa, p_portal, trim(p_usuario), nullif(trim(coalesce(p_obs, '')), ''), now(), v_email)
+  on conflict (empresa_id, portal) do update
+    set usuario = excluded.usuario, observacao = excluded.observacao, atualizado_em = now(), atualizado_por = v_email
+  returning id, senha_id into v_id, v_senha;
+  if p_senha is not null and length(p_senha) > 0 then
+    if v_senha is null then
+      v_senha := vault.create_secret(p_senha, 'licitapro-acesso-' || v_id::text, 'Senha de portal (LicitaPro)');
+      update acessos set senha_id = v_senha where id = v_id;
+    else
+      perform vault.update_secret(v_senha, p_senha);
+    end if;
+  end if;
+  return v_id;
+end $$;
+
+create or replace function public.salvar_categorias(p_ids text[])
+returns integer language plpgsql security definer set search_path = public as $$
+begin
+  if not pode_editar() then raise exception 'Seu perfil não pode mudar as categorias.'; end if;
+  update radar_categorias set ativa = (id = any(p_ids)) where conta_id = public.minha_conta();
+  return reclassificar_editais();
+end $$;
+
+create or replace function public.separar_item(p_item uuid, p_ganho uuid, p_nome text)
+returns uuid language plpgsql security definer set search_path = public as $$
+declare pid uuid; c uuid := public.minha_conta();
+begin
+  if not (public.pode_editar() and public.tem_perm('catalogo')) then raise exception 'Sem permissão para o catálogo'; end if;
+  insert into produtos (conta_id, nome) values (c, left(coalesce(nullif(trim(p_nome), ''), 'Produto'), 200)) returning id into pid;
+  if p_item is not null then update itens set produto_id = pid where id = p_item and conta_id = c; end if;
+  if p_ganho is not null then update itens_ganhos set produto_id = pid where id = p_ganho and conta_id = c; end if;
+  return pid;
+end $$;
+
+create or replace function public.unificar_produto(p_nome text, p_chave text, p_unidade text, p_itens uuid[], p_ganhos uuid[])
+returns uuid language plpgsql security definer set search_path = public as $$
+declare pid uuid; velhos uuid[]; u record; c uuid := public.minha_conta();
+begin
+  if not (public.pode_editar() and public.tem_perm('catalogo')) then raise exception 'Sem permissão para o catálogo'; end if;
+  if p_chave is null or p_chave not like 'REGRA:%' then raise exception 'Regra inválida'; end if;
+  p_itens := coalesce(p_itens, '{}'); p_ganhos := coalesce(p_ganhos, '{}');
+  if cardinality(p_itens) + cardinality(p_ganhos) = 0 then raise exception 'Nenhum item escolhido'; end if;
+  select id into pid from produtos where conta_id = c and chaves @> array[p_chave] limit 1;
+  if pid is null then
+    insert into produtos (conta_id, nome, unidade, chaves) values (c, left(coalesce(nullif(trim(p_nome), ''), 'Produto'), 200), p_unidade, array[p_chave]) returning id into pid;
+  else
+    update produtos set nome = left(coalesce(nullif(trim(p_nome), ''), nome), 200) where id = pid;
+  end if;
+  select array_agg(distinct x) into velhos from (
+    select produto_id x from itens where conta_id = c and id = any(p_itens) and produto_id is not null and produto_id <> pid
+    union select produto_id from itens_ganhos where conta_id = c and id = any(p_ganhos) and produto_id is not null and produto_id <> pid) s;
+  update itens set produto_id = pid where conta_id = c and id = any(p_itens);
+  update itens_ganhos set produto_id = pid where conta_id = c and id = any(p_ganhos);
+  if velhos is not null then
+    update produto_custos set produto_id = pid where conta_id = c and produto_id = any(velhos)
+      and not exists (select 1 from itens where produto_id = produto_custos.produto_id)
+      and not exists (select 1 from itens_ganhos where produto_id = produto_custos.produto_id);
+    delete from produtos p where p.conta_id = c and p.id = any(velhos)
+      and not exists (select 1 from itens where produto_id = p.id)
+      and not exists (select 1 from itens_ganhos where produto_id = p.id)
+      and not exists (select 1 from produtos q where q.id = p.id and exists (select 1 from unnest(q.chaves) x where x like 'REGRA:%'));
+  end if;
+  select valor, marca, anotado_em, anotado_por into u from produto_custos where produto_id = pid order by anotado_em desc limit 1;
+  if found then update produtos set custo_atual = u.valor, custo_marca = u.marca, custo_em = u.anotado_em, custo_por = u.anotado_por where id = pid; end if;
+  return pid;
+end $$;
+
+-- ---------- Novas: entrada por nome, primeiro acesso e criação de conta ----------
+-- Tela de entrada: nome e logo da conta pelo código (sem login)
+create or replace function public.conta_publica(p_codigo text)
+returns table(codigo text, nome text, logo text)
+language sql stable security definer set search_path = public as $$
+  select c.codigo, c.nome, c.logo from contas c where c.codigo = lower(trim(p_codigo)) and c.ativa;
+$$;
+
+-- Quem sou eu: perfil, conta, se precisa criar a senha, se é administrador Auraxis
+create or replace function public.meu_acesso()
+returns jsonb language sql stable security definer set search_path = public as $$
+  select jsonb_build_object(
+    'papel', public.meu_papel(),
+    'auraxis', public.is_auraxis(),
+    'trocar_senha', coalesce((select e.trocar_senha from equipe e where e.email = lower(coalesce(auth.jwt()->>'email', '')) and e.ativo), false),
+    'nome', (select e.nome from equipe e where e.email = lower(coalesce(auth.jwt()->>'email', ''))),
+    'conta', (select jsonb_build_object('id', c.id, 'codigo', c.codigo, 'nome', c.nome, 'logo', c.logo) from contas c where c.id = public.minha_conta())
+  );
+$$;
+
+-- A pessoa criou a própria senha (primeiro acesso ou depois de senha provisória)
+create or replace function public.senha_criada()
+returns void language sql security definer set search_path = public as $$
+  update equipe set trocar_senha = false where email = lower(coalesce(auth.jwt()->>'email', ''));
+$$;
+
+-- Conta nova: configuração e categorias do radar (todas desmarcadas), copiadas da primeira conta
+create or replace function public.criar_conta_dados(p_conta uuid)
+returns void language plpgsql security definer set search_path = public as $$
+declare modelo uuid := (select id from contas where id <> p_conta order by criado_em limit 1);
+begin
+  insert into config (conta_id, id) values (p_conta, 1) on conflict (conta_id) do nothing;
+  insert into radar_categorias (conta_id, id, grupo, nome, ordem, termos, ativa)
+  select p_conta, id, grupo, nome, ordem, termos, false from radar_categorias where conta_id = modelo
+  on conflict do nothing;
+end $$;
+
+create or replace function public.uid_por_email(p_email text)
+returns uuid language sql stable security definer set search_path = public, auth as $$
+  select id from auth.users where lower(email) = lower(p_email) limit 1;
+$$;
+
+-- Quem pode chamar cada função
+revoke execute on function public.conta_do_pai() from public, anon, authenticated;
+revoke execute on function public.processos_conta() from public, anon, authenticated;
+revoke execute on function public.criar_conta_dados(uuid) from public, anon, authenticated;
+revoke execute on function public.uid_por_email(text) from public, anon, authenticated;
+grant execute on function public.criar_conta_dados(uuid) to service_role;
+grant execute on function public.uid_por_email(text) to service_role;
+revoke execute on function public.minha_conta() from public, anon;
+grant execute on function public.minha_conta() to authenticated;
+revoke execute on function public.is_auraxis() from public, anon;
+grant execute on function public.is_auraxis() to authenticated;
+revoke execute on function public.meu_acesso() from public, anon;
+grant execute on function public.meu_acesso() to authenticated;
+revoke execute on function public.senha_criada() from public, anon;
+grant execute on function public.senha_criada() to authenticated;
+grant execute on function public.conta_publica(text) to anon, authenticated;
+grant execute on function public.minha_conta() to service_role;
+
+-- =====================================================================
+-- Contas · Parte 3: regra de isolamento (restritiva) em todas as tabelas da conta
+-- As regras antigas continuam dizendo QUEM pode o quê; esta acrescenta "só na sua conta".
+-- =====================================================================
+do $$
+declare t text;
+begin
+  foreach t in array array['equipe','config','empresas','acessos','empresa_proposta','modelos_documentos','palavras','radar_categorias','editais',
+    'processos','itens','movimentacoes','itens_ganhos','contratos','ordens_fornecimento','ordem_itens','produtos','produto_custos',
+    'robo_estado','robo_disputas','robo_itens','robo_eventos','robo_pedidos','robo_capturas']
+  loop
+    execute format('drop policy if exists "so a minha conta" on public.%I', t);
+    execute format('create policy "so a minha conta" on public.%I as restrictive for all to authenticated using (conta_id = (select public.minha_conta())) with check (conta_id = (select public.minha_conta()))', t);
+  end loop;
+end $$;
+
+-- contas: cada um vê só a sua (o robo_hash nunca sai do banco)
+drop policy if exists "ver minha conta" on public.contas;
+create policy "ver minha conta" on public.contas for select to authenticated using (id = (select public.minha_conta()));
+revoke all on public.contas from anon, authenticated;
+grant select (id, codigo, nome, cidade, uf, logo, ativa, criado_em) on public.contas to authenticated;
+revoke all on public.auraxis_admins from anon, authenticated;
+
+-- vistos e notificações: só de processos da própria conta
+drop policy if exists "meus vistos" on public.vistos;
+create policy "meus vistos" on public.vistos for all to authenticated
+  using (email = lower(auth.jwt()->>'email') and public.is_equipe())
+  with check (email = lower(auth.jwt()->>'email') and public.is_equipe() and exists (select 1 from public.processos p where p.id = processo_id));

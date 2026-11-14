@@ -118,10 +118,11 @@ async function cadastrarDoPortal(s: Sessao, x: ProcPortal, a: any, criadoPor: st
   const link = caminho ? `https://www.portaldecompraspublicas.com.br/processos/${caminho}` : null;
   let edital: any = null;
   if (caminho) {
-    const { data } = await db.from("editais").select("*").ilike("link_origem", `%${caminho}%`).limit(1);
+    const { data } = await db.from("editais").select("*").eq("conta_id", a.conta_id).ilike("link_origem", `%${caminho}%`).limit(1);
     edital = data && data[0];
   }
   const novo = {
+    conta_id: a.conta_id,
     edital_id: edital?.id || null,
     controle_pncp: edital?.controle_pncp || null,
     cnpj: edital?.cnpj || null, ano: edital?.ano || null, seq: edital?.seq || null,
@@ -136,7 +137,7 @@ async function cadastrarDoPortal(s: Sessao, x: ProcPortal, a: any, criadoPor: st
   const { data: criado, error } = await db.from("processos").insert(novo).select("id,orgao,numero,data_sessao").single();
   if (error) {
     if (/duplicate|unique/i.test(error.message)) {
-      const { data: ex } = await db.from("processos").select("id,orgao,numero,data_sessao").eq("pcp_codigo", x.codigo).maybeSingle();
+      const { data: ex } = await db.from("processos").select("id,orgao,numero,data_sessao").eq("conta_id", a.conta_id).eq("pcp_codigo", x.codigo).maybeSingle();
       return { proc: ex, novo: false };
     }
     throw new Error(`Erro ao cadastrar ${x.numero}: ${error.message}`);
@@ -180,7 +181,7 @@ async function sincronizarAcesso(a: any, deadline: number, quem: string) {
 
     const codigos = candidatos.map((x) => x.codigo);
     const { data: existentes } = codigos.length
-      ? await db.from("processos").select("id,pcp_codigo,etapa,etapa_auto,created_by,favorito,orgao,numero").in("pcp_codigo", codigos)
+      ? await db.from("processos").select("id,pcp_codigo,etapa,etapa_auto,created_by,favorito,orgao,numero").eq("conta_id", a.conta_id).in("pcp_codigo", codigos)
       : { data: [] as any[] };
     const porCodigo = new Map((existentes || []).map((p: any) => [Number(p.pcp_codigo), p]));
 
@@ -240,8 +241,10 @@ async function sincronizarAcesso(a: any, deadline: number, quem: string) {
   return r;
 }
 
-async function sincronizar(empresaId: string | undefined, deadline: number, quem: string) {
-  let q = db.from("acessos").select("id,empresa_id,portal,usuario,senha_id").not("senha_id", "is", null).eq("portal", "pcp");
+// contaId: só os acessos daquela conta (chamada pelo app); sem conta (tarefa automática), todas as contas ativas.
+async function sincronizar(empresaId: string | undefined, deadline: number, quem: string, contaId?: string) {
+  let q = db.from("acessos").select("id,empresa_id,conta_id,portal,usuario,senha_id,contas!inner(ativa)").not("senha_id", "is", null).eq("portal", "pcp").eq("contas.ativa", true);
+  if (contaId) q = q.eq("conta_id", contaId);
   if (empresaId) q = q.eq("empresa_id", empresaId);
   const { data: acessos } = await q;
   if (!acessos || !acessos.length) throw new Error("Não há login do Portal de Compras Públicas guardado. Cadastre em Ajustes → Empresas e acessos.");
@@ -285,7 +288,7 @@ async function historicoAcesso(a: any, ano: number, deadline: number, quem: stri
     }
     r.noAno = doAno.length;
     const { data: existentes } = doAno.length
-      ? await db.from("processos").select("id,pcp_codigo,marcas_ok").in("pcp_codigo", doAno.map((x) => x.codigo))
+      ? await db.from("processos").select("id,pcp_codigo,marcas_ok").eq("conta_id", a.conta_id).in("pcp_codigo", doAno.map((x) => x.codigo))
       : { data: [] as any[] };
     const porCodigo = new Map((existentes || []).map((p: any) => [Number(p.pcp_codigo), p]));
     const novosIgnorar: number[] = [];
@@ -319,8 +322,9 @@ async function historicoAcesso(a: any, ano: number, deadline: number, quem: stri
   return r;
 }
 
-async function historico(ano: number, empresaId: string | undefined, deadline: number, quem: string, desde = "") {
-  let q = db.from("acessos").select("id,empresa_id,portal,usuario,senha_id,hist_ignorar").not("senha_id", "is", null).eq("portal", "pcp");
+async function historico(ano: number, empresaId: string | undefined, deadline: number, quem: string, desde = "", contaId?: string) {
+  let q = db.from("acessos").select("id,empresa_id,conta_id,portal,usuario,senha_id,hist_ignorar,contas!inner(ativa)").not("senha_id", "is", null).eq("portal", "pcp").eq("contas.ativa", true);
+  if (contaId) q = q.eq("conta_id", contaId);
   if (empresaId) q = q.eq("empresa_id", empresaId);
   const { data: acessos } = await q;
   if (!acessos || !acessos.length) throw new Error("Não há login do Portal de Compras Públicas guardado. Cadastre em Ajustes → Empresas e acessos.");
@@ -358,16 +362,17 @@ Deno.serve(async (req) => {
     const { data: u } = await db.auth.getUser(token);
     const email = (u?.user?.email || "").toLowerCase();
     if (!email) return json({ erro: "Faça login novamente." }, 401);
-    const { data: membro } = await db.from("equipe").select("papel,ativo").eq("email", email).maybeSingle();
-    if (!membro || !membro.ativo) return json({ erro: "Seu acesso ainda não foi liberado pelo administrador." }, 403);
+    const { data: membro } = await db.from("equipe").select("papel,ativo,conta_id,nome,contas(ativa)").eq("email", email).maybeSingle();
+    if (!membro || !membro.ativo || !(membro as any).contas?.ativa) return json({ erro: "Seu acesso ainda não foi liberado pelo administrador." }, 403);
     if (membro.papel === "acompanha") return json({ erro: "Seu perfil só acompanha disputas." }, 403);
     const body = await req.json().catch(() => ({}));
     const emp = typeof body.empresa_id === "string" && /^[0-9a-f-]{36}$/i.test(body.empresa_id) ? body.empresa_id : undefined;
+    const quem = (membro.nome || email.split("@")[0]).slice(0, 40);
     if (body.acao === "historico") {
       const ano = Number(body.ano) >= 2020 && Number(body.ano) <= 2100 ? Number(body.ano) : new Date().getFullYear();
-      return json(await historico(ano, emp, deadline, email.split("@")[0], String(body.desde || "")));
+      return json(await historico(ano, emp, deadline, quem, String(body.desde || ""), membro.conta_id));
     }
-    return json(await sincronizar(emp, deadline, email.split("@")[0]));
+    return json(await sincronizar(emp, deadline, quem, membro.conta_id));
   } catch (e) {
     return json({ erro: String((e as Error).message || e) }, 500);
   }

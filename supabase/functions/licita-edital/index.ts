@@ -111,8 +111,8 @@ Deno.serve(async (req) => {
   const { data: u } = await db.auth.getUser(token);
   const email = (u?.user?.email || "").toLowerCase();
   if (!email) return json({ erro: "Faça login novamente." }, 401);
-  const { data: membro } = await db.from("equipe").select("papel,ativo").eq("email", email).maybeSingle();
-  if (!membro || !membro.ativo) return json({ erro: "Sem acesso." }, 403);
+  const { data: membro } = await db.from("equipe").select("papel,ativo,conta_id,contas(ativa)").eq("email", email).maybeSingle();
+  if (!membro || !membro.ativo || !(membro as any).contas?.ativa) return json({ erro: "Sem acesso." }, 403);
 
   const tipo = req.headers.get("content-type") || "";
   try {
@@ -125,7 +125,7 @@ Deno.serve(async (req) => {
     }
     const body = await req.json().catch(() => ({}));
     if (!body.processo_id) return json({ erro: "Informe o processo." }, 400);
-    const { data: p } = await db.from("processos").select("id,cnpj,ano,seq").eq("id", body.processo_id).maybeSingle();
+    const { data: p } = await db.from("processos").select("id,cnpj,ano,seq").eq("id", body.processo_id).eq("conta_id", membro.conta_id).maybeSingle();
     if (!p) return json({ erro: "Processo não encontrado." }, 404);
     const links = await linksEdital(p);
     if (!links.length) return json({ erro: "Não achei o edital nos documentos do processo. Envie o PDF do edital." }, 404);

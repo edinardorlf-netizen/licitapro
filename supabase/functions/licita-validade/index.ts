@@ -162,12 +162,12 @@ Deno.serve(async (req) => {
   const { data: u } = await db.auth.getUser(token);
   const email = (u?.user?.email || "").toLowerCase();
   if (!email) return json({ erro: "Faça login novamente." }, 401);
-  const { data: membro } = await db.from("equipe").select("papel,ativo").eq("email", email).maybeSingle();
-  if (!membro || !membro.ativo) return json({ erro: "Sem acesso." }, 403);
+  const { data: membro } = await db.from("equipe").select("papel,ativo,conta_id,contas(ativa)").eq("email", email).maybeSingle();
+  if (!membro || !membro.ativo || !(membro as any).contas?.ativa) return json({ erro: "Sem acesso." }, 403);
 
   let body: any = {};
   try { body = await req.json(); } catch (_) { /* vazio */ }
-  let q = db.from("processos").select("id,cnpj,ano,seq,validade_fonte").in("resultado", ["ganhamos", "ganhamos_parte"]);
+  let q = db.from("processos").select("id,cnpj,ano,seq,validade_fonte").eq("conta_id", membro.conta_id).in("resultado", ["ganhamos", "ganhamos_parte"]);
   if (Array.isArray(body.ids) && body.ids.length) q = q.in("id", body.ids.slice(0, 50));
   q = q.is("validade_checada_em", null);
   const { data: procs, error } = await q.order("data_sessao", { ascending: true }).limit(60);

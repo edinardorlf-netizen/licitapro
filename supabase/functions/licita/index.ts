@@ -259,8 +259,8 @@ function proxima(p: any): number {
 // Nomes e CNPJs que identificam "nós" num processo: a empresa do processo,
 // ou todas as empresas ativas se o processo não tiver empresa marcada.
 async function identificacao(p: any): Promise<string[]> {
-  let q = db.from("empresas").select("nome,cnpj,apelidos").eq("ativa", true);
-  if (p.empresa_id) q = db.from("empresas").select("nome,cnpj,apelidos").eq("id", p.empresa_id);
+  let q = db.from("empresas").select("nome,cnpj,apelidos").eq("ativa", true).eq("conta_id", p.conta_id);
+  if (p.empresa_id) q = db.from("empresas").select("nome,cnpj,apelidos").eq("id", p.empresa_id).eq("conta_id", p.conta_id);
   const { data } = await q;
   const out: string[] = [];
   for (const e of data || []) {
@@ -592,13 +592,14 @@ async function prepararPush() {
   webpush.setVapidDetails("mailto:licitapro@auraxis.app", k.vapid_publica, k.vapid_privada);
   return (vapidPronto = true);
 }
-// Manda para todos os aparelhos ativados (ou só os de um e-mail). Inscrição vencida é apagada.
-async function enviarPush(msg: { titulo: string; corpo: string; url?: string; tag?: string; fixar?: boolean }, soEmail?: string) {
+// Manda para os aparelhos ativados da equipe da conta (ou só os de um e-mail). Inscrição vencida é apagada.
+async function enviarPush(msg: { titulo: string; corpo: string; url?: string; tag?: string; fixar?: boolean }, soEmail?: string, contaId?: string) {
   if (!(await prepararPush())) return 0;
   let q = db.from("push_inscricoes").select("id,endpoint,p256dh,auth,email,falhas");
   if (soEmail) q = q.eq("email", soEmail);
   else {
-    const { data: ativos } = await db.from("equipe").select("email").eq("ativo", true);
+    if (!contaId) return 0;
+    const { data: ativos } = await db.from("equipe").select("email").eq("ativo", true).eq("conta_id", contaId);
     q = q.in("email", (ativos || []).map((a: any) => a.email));
   }
   const { data: subs } = await q;
@@ -626,11 +627,11 @@ async function avisar(p: any, movs: Mov[]) {
       titulo: `${p.orgao || "Processo"}${p.numero ? ` · ${p.numero}` : ""}`.slice(0, 90),
       corpo: (movs.length > 1 ? `${m0.titulo} (+${movs.length - 1})` : `${m0.titulo}${m0.detalhe ? ` — ${m0.detalhe}` : ""}`).slice(0, 220),
       url: `${APP_URL}#p=${p.id}`, tag: `p-${p.id}`, fixar: urgente,
-    });
+    }, undefined, p.conta_id);
   } catch (_) { /* notificação é opcional */ }
   const [{ data: cfg }, { data: seg }] = await Promise.all([
-    db.from("config").select("telegram_chat_id,telegram_ativo").eq("id", 1).single(),
-    db.from("segredos").select("valor").eq("chave", "telegram_token").maybeSingle(),
+    db.from("config").select("telegram_chat_id,telegram_ativo").eq("conta_id", p.conta_id).maybeSingle(),
+    db.from("segredos").select("valor").eq("chave", `telegram_token:${p.conta_id}`).maybeSingle(),
   ]);
   if (!cfg?.telegram_ativo || !cfg.telegram_chat_id || !seg?.valor) return;
   const esc = (s: string) => (s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -713,16 +714,16 @@ async function estimarDia(portalK: string, id: number): Promise<Date | null> {
   return null;
 }
 
-async function buscarPorId(idTxt: string, portalK: string, dataDica: string | null) {
+async function buscarPorId(idTxt: string, portalK: string, dataDica: string | null, contaId: string) {
   const id = idTxt.replace(/\D/g, "");
   if (id.length < 4) throw new Error("Esse ID parece curto demais. Confira o número do processo no portal.");
   // 1) Já está no radar?
-  const { data: noRadar } = await db.from("editais").select("*").ilike("link_origem", `%${id}%`).limit(20);
+  const { data: noRadar } = await db.from("editais").select("*").eq("conta_id", contaId).ilike("link_origem", `%${id}%`).limit(20);
   const ed = (noRadar || []).find((e) => contemId(e.link_origem, id) && (portalK === "outro" || portalDe(e.link_origem, e.sistema) === portalK));
   if (ed) return { cnpj: ed.cnpj as string, ano: ed.ano as number, seq: ed.seq as number, onde: "radar" };
 
   // 2) Procura no PNCP, dia a dia
-  const { data: cfg } = await db.from("config").select("ufs,uf").eq("id", 1).maybeSingle();
+  const { data: cfg } = await db.from("config").select("ufs,uf").eq("conta_id", contaId).maybeSingle();
   const ufs: string[] = (cfg?.ufs && cfg.ufs.length ? cfg.ufs : [cfg?.uf || "MG"]);
   const rx = ID_NO_LINK[portalK];
   const dica = dataDica && /^\d{4}-\d{2}-\d{2}$/.test(dataDica) ? new Date(`${dataDica}T12:00:00-03:00`) : null;
@@ -788,9 +789,14 @@ async function buscarPorId(idTxt: string, portalK: string, dataDica: string | nu
 }
 
 // ---------- CADASTRAR ----------
-async function cadastrar(entrada: string, email: string | null, empresaId: string | null = null, portalK: string | null = null, dataDica: string | null = null) {
+async function cadastrar(contaId: string, entrada: string, email: string | null, empresaId: string | null = null, portalK: string | null = null, dataDica: string | null = null) {
+  if (!contaId) throw new Error("Conta não identificada.");
+  if (empresaId) {
+    const { data: e } = await db.from("empresas").select("id").eq("id", empresaId).eq("conta_id", contaId).maybeSingle();
+    if (!e) empresaId = null;
+  }
   if (!empresaId) {
-    const { data: ativas } = await db.from("empresas").select("id").eq("ativa", true).limit(2);
+    const { data: ativas } = await db.from("empresas").select("id").eq("ativa", true).eq("conta_id", contaId).limit(2);
     if (ativas && ativas.length === 1) empresaId = ativas[0].id;
   }
   const txt = (entrada || "").trim();
@@ -808,17 +814,17 @@ async function cadastrar(entrada: string, email: string | null, empresaId: strin
   if (mApp) { cnpj = mApp[1]; ano = Number(mApp[2]); seq = Number(mApp[3]); }
   else if (mCtrl) { cnpj = mCtrl[1]; seq = Number(mCtrl[2]); ano = Number(mCtrl[3]); }
   else if (pcpPath) {
-    const { data } = await db.from("editais").select("*").ilike("link_origem", `%${pcpPath}%`).limit(1);
+    const { data } = await db.from("editais").select("*").eq("conta_id", contaId).ilike("link_origem", `%${pcpPath}%`).limit(1);
     edital = data && data[0];
   } else if (mLic || mId) {
-    const r = await buscarPorId(mLic ? mLic[1] : mId![1], mLic ? "licitar" : (portalK || "outro"), dataDica);
+    const r = await buscarPorId(mLic ? mLic[1] : mId![1], mLic ? "licitar" : (portalK || "outro"), dataDica, contaId);
     cnpj = r.cnpj; ano = r.ano; seq = r.seq;
   } else {
     throw new Error("Não reconheci esse link. Use o ID do processo no portal, o link do PNCP, o número de controle do PNCP (ex.: 18192898000102-1-000167/2026) ou o link do Portal de Compras Públicas.");
   }
   if (edital) { cnpj = edital.cnpj; ano = edital.ano; seq = edital.seq; }
   if (cnpj && !edital) {
-    const { data } = await db.from("editais").select("*").eq("cnpj", cnpj).eq("ano", ano).eq("seq", seq).limit(1);
+    const { data } = await db.from("editais").select("*").eq("conta_id", contaId).eq("cnpj", cnpj).eq("ano", ano).eq("seq", seq).limit(1);
     edital = data && data[0];
   }
 
@@ -833,16 +839,17 @@ async function cadastrar(entrada: string, email: string | null, empresaId: strin
 
   // Já cadastrado?
   if (controle) {
-    const { data } = await db.from("processos").select("id").eq("controle_pncp", controle).maybeSingle();
+    const { data } = await db.from("processos").select("id").eq("conta_id", contaId).eq("controle_pncp", controle).maybeSingle();
     if (data) return { id: data.id, existente: true };
   }
   if (pcpCodigo) {
-    const { data } = await db.from("processos").select("id").eq("pcp_codigo", pcpCodigo).maybeSingle();
+    const { data } = await db.from("processos").select("id").eq("conta_id", contaId).eq("pcp_codigo", pcpCodigo).maybeSingle();
     if (data) return { id: data.id, existente: true };
   }
 
   const link = det?.linkSistemaOrigem || edital?.link_origem || (pcpPath ? `https://www.portaldecompraspublicas.com.br/processos/${pcpPath}` : null);
   const novo = {
+    conta_id: contaId,
     edital_id: edital?.id || null,
     controle_pncp: controle,
     cnpj, ano, seq,
@@ -890,7 +897,12 @@ Deno.serve(async (req) => {
       if (tarefa === "acompanhar") return json(await acompanhar(deadline));
       if (tarefa === "cadastrar") {
         const body = await req.json().catch(() => ({}));
-        return json(await cadastrar(String(body.entrada || ""), null, null, typeof body.portal === "string" ? body.portal : null, typeof body.data === "string" ? body.data : null));
+        // Conta pelo código (body.conta); sem código, só funciona se houver uma conta só.
+        let contaQ = db.from("contas").select("id").eq("ativa", true);
+        if (typeof body.conta === "string" && body.conta) contaQ = contaQ.eq("codigo", body.conta.toLowerCase());
+        const { data: contas } = await contaQ.limit(2);
+        if (!contas || contas.length !== 1) return json({ erro: "Informe o código da conta (campo conta)." }, 400);
+        return json(await cadastrar(contas[0].id, String(body.entrada || ""), null, null, typeof body.portal === "string" ? body.portal : null, typeof body.data === "string" ? body.data : null));
       }
       return json({ erro: "tarefa desconhecida" }, 400);
     }
@@ -899,8 +911,8 @@ Deno.serve(async (req) => {
     const { data: u } = await db.auth.getUser(token);
     const email = (u?.user?.email || "").toLowerCase();
     if (!email) return json({ erro: "Faça login novamente." }, 401);
-    const { data: membro } = await db.from("equipe").select("papel,ativo").eq("email", email).maybeSingle();
-    if (!membro || !membro.ativo) return json({ erro: "Seu acesso ainda não foi liberado pelo administrador." }, 403);
+    const { data: membro } = await db.from("equipe").select("papel,ativo,conta_id,contas(ativa)").eq("email", email).maybeSingle();
+    if (!membro || !membro.ativo || !(membro as any).contas?.ativa) return json({ erro: "Seu acesso ainda não foi liberado pelo administrador." }, 403);
 
     const body = await req.json().catch(() => ({}));
     if (body.acao === "cadastrar") {
@@ -908,14 +920,14 @@ Deno.serve(async (req) => {
       const emp = typeof body.empresa_id === "string" && /^[0-9a-f-]{36}$/i.test(body.empresa_id) ? body.empresa_id : null;
       const portalK = typeof body.portal === "string" && /^[a-z-]{2,15}$/.test(body.portal) ? body.portal : null;
       const dataDica = typeof body.data === "string" && /^\d{4}-\d{2}-\d{2}$/.test(body.data) ? body.data : null;
-      return json(await cadastrar(String(body.entrada || ""), email, emp, portalK, dataDica));
+      return json(await cadastrar(membro.conta_id, String(body.entrada || ""), email, emp, portalK, dataDica));
     }
     if (body.acao === "push_teste") {
       const enviados = await enviarPush({ titulo: "LicitaPro", corpo: "✅ Notificações ligadas neste aparelho. Os avisos do robô vão aparecer assim.", url: APP_URL, tag: "teste" }, email);
       return json({ ok: true, enviados });
     }
     if (body.acao === "verificar") {
-      const { data: p } = await db.from("processos").select("*").eq("id", body.id).single();
+      const { data: p } = await db.from("processos").select("*").eq("id", body.id).eq("conta_id", membro.conta_id).maybeSingle();
       if (!p) return json({ erro: "Processo não encontrado." }, 404);
       return json(await verificarProcesso(p));
     }

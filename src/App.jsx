@@ -26,6 +26,8 @@ import ContratosLancados from "./ContratosLancados.jsx";
 import PropostaEtapa from "./PropostaEtapa.jsx";
 import Demandas from "./Demandas.jsx";
 import LeituraEdital from "./LeituraEdital.jsx";
+import { Entrar, VincularAparelho, TrocarSenha, CampoSenha, LinkConta, prenderAparelho, aparelhoLido, ehInterno } from "./Acesso.jsx";
+import PainelAuraxis from "./PainelAuraxis.jsx";
 import {
   sb, appUrl, portal, PORTAIS, ETAPAS, etapa, ATIVAS, A_LANCAR, ACOMPANHANDO, CATEGORIAS, RESULTADOS, resultado, ganhou, PAPEIS, PERMISSOES, fmtData, fmtDataCurta, fmtHora, fmtDH, diaChave, hojeChave,
   diaLongo, falta, brl, num, parseNum, fmtIn, errMsg, chamarRobo, iniciais,
@@ -301,6 +303,7 @@ const Icon = ({ name, size = 20 }) => {
     pen: <><path d="M4 20h4L19 9l-4-4L4 16v4Z" /><path d="m14 6 4 4" /></>,
     box: <><path d="M21 8 12 3 3 8v8l9 5 9-5V8Z" /><path d="m3 8 9 5 9-5M12 13v8" /></>,
     truck: <><path d="M3 6h11v10H3zM14 10h4l3 3v3h-7" /><circle cx="7" cy="17.5" r="1.5" /><circle cx="17" cy="17.5" r="1.5" /></>,
+    users: <><circle cx="9" cy="8" r="3.2" /><path d="M3 19c.8-3.2 3.2-5 6-5s5.2 1.8 6 5" /><circle cx="17" cy="9" r="2.5" /><path d="M16 14.2c2.4.2 4.2 1.8 5 4.8" /></>,
     scale: <><path d="M12 3v18M7 21h10M5 7h14" /><path d="m5 7-3 6a3 3 0 0 0 6 0L5 7ZM19 7l-3 6a3 3 0 0 0 6 0l-3-6Z" /></>,
   }[name];
   return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{p}</svg>;
@@ -352,23 +355,40 @@ function useSession() {
 
 export default function App() {
   const [session, recovery, setRecovery] = useSession();
-  const [papel, setPapel] = useState(undefined);
+  // meu_acesso: { papel, auraxis, trocar_senha, nome, conta: { id, codigo, nome, logo } }
+  const [acesso, setAcesso] = useState(undefined);
+  const [verAuraxis, setVerAuraxis] = useState(false);
   const [toast, setToast] = useState("");
-  useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(""), 2800); return () => clearTimeout(t); }, [toast]);
+  const [hash, setHash] = useState(() => (typeof location !== "undefined" ? location.hash : ""));
+  useEffect(() => { const f = () => setHash(location.hash); window.addEventListener("hashchange", f); return () => window.removeEventListener("hashchange", f); }, []);
+  useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(""), 3200); return () => clearTimeout(t); }, [toast]);
 
+  const conferir = useCallback(() => sb.rpc("meu_acesso").then(({ data, error }) => setAcesso(error ? { papel: null } : data || { papel: null })), []);
   useEffect(() => {
-    if (!session) { setPapel(undefined); return; }
-    sb.rpc("meu_papel").then(({ data, error }) => setPapel(error ? null : data || null));
+    if (!session) { setAcesso(undefined); setVerAuraxis(false); return; }
+    conferir();
   }, [session && session.user.id]);
 
+  // O aparelho fica com o nome e o logo da empresa de quem entrou pelo nome (para a tela de entrada)
+  useEffect(() => {
+    const c = acesso && acesso.conta;
+    if (!c || !session || !ehInterno(session.user.email)) return;
+    const a = aparelhoLido();
+    if (!a || a.codigo !== c.codigo || a.nome !== c.nome || (a.logo || null) !== (c.logo || null)) prenderAparelho(c);
+  }, [acesso && acesso.conta && JSON.stringify(acesso.conta)]);
+
+  const vincular = (hash.match(/^#entrar\/([a-z0-9]{3,30})$/i) || [])[1];
   let body;
   if (!sb) body = <div className="auth card empty"><b>Configuração ausente</b>Preencha o arquivo config.js.</div>;
+  else if (vincular) body = <VincularAparelho codigo={vincular.toLowerCase()} />;
   else if (session === undefined) body = <div className="auth"><div className="empty">Carregando…</div></div>;
-  else if (!session) body = <Auth />;
+  else if (!session) body = <Entrar />;
   else if (recovery) body = <NovaSenha onDone={() => setRecovery(false)} notify={setToast} />;
-  else if (papel === undefined) body = <div className="auth"><div className="empty">Conferindo seu acesso…</div></div>;
-  else if (!papel) body = <SemAcesso email={session.user.email} />;
-  else body = <Painel session={session} papel={papel} notify={setToast} />;
+  else if (acesso === undefined) body = <div className="auth"><div className="empty">Conferindo seu acesso…</div></div>;
+  else if (acesso.trocar_senha) body = <TrocarSenha nome={acesso.nome} conta={acesso.conta} onFeito={() => { setToast("Senha criada. Bem-vindo(a)!"); conferir(); }} />;
+  else if (acesso.auraxis && (!acesso.papel || verAuraxis)) body = <PainelAuraxis notify={setToast} onVoltar={acesso.papel ? () => setVerAuraxis(false) : null} />;
+  else if (!acesso.papel) body = <SemAcesso email={session.user.email} />;
+  else body = <Painel session={session} papel={acesso.papel} acesso={acesso} abrirAuraxis={acesso.auraxis ? () => setVerAuraxis(true) : null} notify={setToast} />;
 
   return (
     <>
@@ -379,74 +399,30 @@ export default function App() {
   );
 }
 
-function Auth() {
-  const [modo, setModo] = useState("entrar");
-  const [f, setF] = useState({ nome: "", email: "", senha: "" });
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState("");
-  const [info, setInfo] = useState("");
-  const go = async (e) => {
-    e.preventDefault(); setErr(""); setInfo("");
-    const email = f.email.trim().toLowerCase();
-    if (!/^\S+@\S+\.\S+$/.test(email)) return setErr("Digite um e-mail válido.");
-    if (modo !== "esqueci" && f.senha.length < 6) return setErr("A senha precisa ter pelo menos 6 caracteres.");
+/* Ajustes → Sua conta: troca a própria senha (com o login aberto) */
+function TrocarMinhaSenha({ notify }) {
+  const [aberto, setAberto] = useState(false);
+  const [s, setS] = useState(""); const [r, setR] = useState(""); const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
+  if (!aberto) return <button type="button" className="btn ghost sm" style={{ alignSelf: "flex-start" }} onClick={() => setAberto(true)}>Trocar minha senha</button>;
+  const salvar = async (e) => {
+    e.preventDefault(); setErr("");
+    if (s.length < 6) return setErr("A senha precisa ter pelo menos 6 caracteres.");
+    if (s !== r) return setErr("As duas senhas não são iguais.");
     setBusy(true);
-    try {
-      if (modo === "entrar") { const { error } = await sb.auth.signInWithPassword({ email, password: f.senha }); if (error) throw error; }
-      else if (modo === "criar") {
-        const { data, error } = await sb.auth.signUp({ email, password: f.senha, options: { data: { name: f.nome.trim() }, emailRedirectTo: appUrl() } });
-        if (error) throw error;
-        if (!data.session) setInfo(`Enviamos um link de confirmação para ${email}. Confirme e depois entre aqui.`);
-      } else {
-        const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo: appUrl() }); if (error) throw error;
-        setInfo(`Se existir uma conta com ${email}, você vai receber um link para criar uma nova senha.`);
-      }
-    } catch (e2) { setErr(errMsg(e2)); }
+    const { error } = await sb.auth.updateUser({ password: s });
     setBusy(false);
+    if (error) return setErr(/recent|reauth/i.test(error.message) ? "Por segurança, saia e entre de novo antes de trocar a senha." : errMsg(error));
+    notify("Senha trocada"); setAberto(false); setS(""); setR("");
   };
   return (
-    <div className="auth" style={{ paddingInline: 16 }}>
-      <div className="auth-hero">
-        <span className="brand-mark" style={{ width: 48, height: 48, borderRadius: 14 }}><Icon name="radar" size={26} /></span>
-        <h1>LicitaPro</h1>
-        <div className="por-marca">um sistema <b>Auraxis</b></div>
-        <p>Editais, processos e disputas da equipe num lugar só.</p>
+    <form className="form" onSubmit={salvar} noValidate>
+      <div className="fgrid">
+        <div className="field"><label htmlFor="tm1">Nova senha</label><CampoSenha id="tm1" value={s} onChange={setS} autoComplete="new-password" /></div>
+        <div className="field"><label htmlFor="tm2">Repita a senha</label><CampoSenha id="tm2" value={r} onChange={setR} autoComplete="new-password" /></div>
       </div>
-      <form className="card form" onSubmit={go} noValidate>
-        {modo !== "esqueci" ? (
-          <div className="seg" style={{ alignSelf: "flex-start" }}>
-            <button type="button" className={modo === "entrar" ? "on" : ""} onClick={() => setModo("entrar")}>Entrar</button>
-            <button type="button" className={modo === "criar" ? "on" : ""} onClick={() => setModo("criar")}>Criar conta</button>
-          </div>
-        ) : <b>Criar nova senha</b>}
-        {modo === "criar" && <div className="field"><label htmlFor="a-nome">Seu nome</label><input id="a-nome" className="input" value={f.nome} onChange={(e) => setF({ ...f, nome: e.target.value })} autoComplete="name" /></div>}
-        <div className="field"><label htmlFor="a-email">E-mail</label><input id="a-email" className="input" type="email" autoComplete="email" value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} /></div>
-        {modo !== "esqueci" && <div className="field"><label htmlFor="a-senha">Senha</label><CampoSenha id="a-senha" autoComplete={modo === "criar" ? "new-password" : "current-password"} value={f.senha} onChange={(v) => setF({ ...f, senha: v })} /></div>}
-        {err && <p className="err">{err}</p>}
-        {info && <div className="banner info">{info}</div>}
-        <button className="btn block" disabled={busy}>{busy ? "Aguarde…" : modo === "entrar" ? "Entrar" : modo === "criar" ? "Criar conta" : "Enviar link"}</button>
-        {modo === "entrar" && <button type="button" className="linkbtn" onClick={() => setModo("esqueci")}>Esqueci minha senha</button>}
-        {modo === "esqueci" && <button type="button" className="linkbtn" onClick={() => setModo("entrar")}>Voltar para o login</button>}
-      </form>
-      <p className="hint" style={{ textAlign: "center" }}>O acesso é liberado pelo administrador da equipe.</p>
-    </div>
-  );
-}
-
-/* Campo de senha com o botão de olho para mostrar/esconder o que foi digitado */
-function CampoSenha({ id, value, onChange, autoComplete }) {
-  const [ver, setVer] = useState(false);
-  return (
-    <div style={{ position: "relative" }}>
-      <input id={id} className="input" type={ver ? "text" : "password"} autoComplete={autoComplete} value={value} onChange={(e) => onChange(e.target.value)} style={{ paddingRight: 46 }} spellCheck={false} autoCapitalize="none" />
-      <button type="button" onClick={() => setVer((v) => !v)} aria-label={ver ? "Esconder a senha" : "Mostrar a senha"} aria-pressed={ver} title={ver ? "Esconder a senha" : "Mostrar a senha"}
-        style={{ position: "absolute", right: 4, top: "50%", transform: "translateY(-50%)", width: 38, height: 34, border: 0, background: "transparent", color: "var(--muted)", cursor: "pointer", borderRadius: 8, display: "grid", placeItems: "center" }}>
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z" /><circle cx="12" cy="12" r="3" />
-          {ver && <path d="M4 4l16 16" />}
-        </svg>
-      </button>
-    </div>
+      {err && <p className="err">{err}</p>}
+      <div className="row-inline"><button className="btn sm" disabled={busy}>Salvar senha</button><button type="button" className="btn ghost sm" onClick={() => setAberto(false)}>Cancelar</button></div>
+    </form>
   );
 }
 
@@ -473,8 +449,8 @@ function SemAcesso({ email }) {
   return (
     <div className="auth" style={{ paddingInline: 16 }}>
       <div className="card form">
-        <b style={{ fontSize: 17 }}>Seu acesso ainda não foi liberado</b>
-        <p style={{ margin: 0, color: "var(--ink-2)" }}>Peça ao administrador para adicionar <b>{email}</b> em <b>Ajustes → Equipe</b>. Depois disso, é só abrir o app de novo.</p>
+        <b style={{ fontSize: 17 }}>Sem acesso</b>
+        <p style={{ margin: 0, color: "var(--ink-2)" }}>{ehInterno(email) ? "Seu acesso foi desligado ou a sua empresa está sem acesso no momento. Fale com o administrador da empresa." : <>Este login não está ligado a nenhuma empresa. Fale com quem instalou o sistema.</>}</p>
         <button className="btn ghost" onClick={() => sb.auth.signOut()}><Icon name="logout" size={16} />Sair</button>
       </div>
     </div>
@@ -515,7 +491,8 @@ function cnpjValido(c) {
 }
 const nomeCurto = (e) => (e ? (String(e.apelidos || "").split(",")[0].trim() || e.nome) : "");
 
-function Painel({ session, papel, notify }) {
+function Painel({ session, papel, acesso, abrirAuraxis, notify }) {
+  const conta = (acesso && acesso.conta) || null;
   const inicial = lerHash();
   const [tab, setTab] = useState(inicial.tab);
   const [procId, setProcId] = useState(inicial.proc);
@@ -581,7 +558,7 @@ function Painel({ session, papel, notify }) {
   const totalNV = Object.values(naoVistas).reduce((a, r) => a + Number(r.importantes || 0), 0);
   // celular: só monitoramento (robô, produtos e reequilíbrio ficam no computador)
   const abas = TABS.filter((t) => (!celular || !t.pc) && (!PERM_ABA[t.id] || perm(PERM_ABA[t.id])));
-  const ctx = { session, email, papel, admin, perm, pode, podeEquipe, celular, equipe, config, empresas, procs, naoVistas, carregar, notify, abrir, ir, setConfig };
+  const ctx = { session, email, papel, admin, perm, pode, podeEquipe, celular, equipe, config, empresas, procs, naoVistas, carregar, notify, abrir, ir, setConfig, conta, abrirAuraxis };
   // Aba sem permissão (ex.: link antigo): vai para a primeira liberada
   useEffect(() => {
     if (!admin && !eu) return; // ainda carregando a equipe
@@ -606,7 +583,10 @@ function Painel({ session, papel, notify }) {
   return (
     <>
       <aside className="side">
-        <div className="brand"><span className="brand-mark"><Icon name="radar" size={18} /></span><span className="brand-txt">LicitaPro<small>por Auraxis</small></span></div>
+        <div className="brand">
+          {conta && conta.logo ? <img src={conta.logo} alt="" style={{ width: 34, height: 34, objectFit: "contain", borderRadius: 8, background: "#fff" }} /> : <span className="brand-mark"><Icon name="radar" size={18} /></span>}
+          <span className="brand-txt">{conta ? conta.nome : "LicitaPro"}<small>{conta ? "LicitaPro · Auraxis" : "por Auraxis"}</small></span>
+        </div>
         <nav className="nav" aria-label="Seções">
           {abas.map((t) => (
             <button key={t.id} className={tab === t.id ? "on" : ""} onClick={() => ir(t.id)} aria-current={tab === t.id ? "page" : undefined}>
@@ -618,6 +598,7 @@ function Painel({ session, papel, notify }) {
         <div className="side-foot">
           <span className="brand-mark" style={{ background: "var(--ink-2)", fontSize: 12, fontWeight: 700 }}>{iniciais(eu ? eu.nome : email)}</span>
           <div style={{ minWidth: 0, flex: 1 }}><b style={{ fontSize: 13 }}>{eu ? eu.nome : email}</b><small>{PAPEIS[papel]}</small></div>
+          {abrirAuraxis && <button className="iconbtn" onClick={abrirAuraxis} aria-label="Administrador Auraxis (empresas clientes)" title="Administrador Auraxis (empresas clientes)"><Icon name="users" size={16} /></button>}
           <button className="iconbtn" onClick={() => sb.auth.signOut()} aria-label="Sair" title="Sair"><Icon name="logout" size={16} /></button>
         </div>
       </aside>
@@ -2044,7 +2025,8 @@ function Ajustes({ ctx }) {
   const conta = (
     <div className="card form">
       <div className="card-h" style={{ marginBottom: 0 }}><h2>Sua conta</h2></div>
-      <p className="hint">{email} · {PAPEIS[papel]}</p>
+      <p className="hint">{ehInterno(email) ? `Entra com o nome ${(equipe.find((p) => p.email === email) || {}).nome || ""}` : email}{ctx.conta ? ` · ${ctx.conta.nome}` : ""} · {PAPEIS[papel]}</p>
+      <TrocarMinhaSenha notify={notify} />
       <button className="btn ghost" style={{ alignSelf: "flex-start" }} onClick={() => sb.auth.signOut()}><Icon name="logout" size={16} />Sair</button>
     </div>
   );
@@ -2066,7 +2048,13 @@ function Ajustes({ ctx }) {
       <CategoriasAjustes pode={pode} notify={notify} />
       <div className="grid2">
         <div className="stack">
-          <Equipe equipe={equipe} admin={admin} notify={notify} carregar={carregar} email={email} />
+          <Equipe equipe={equipe} admin={admin} notify={notify} carregar={carregar} email={email} conta={ctx.conta} />
+          {admin && ctx.conta && (
+            <div className="card form">
+              <div className="card-h" style={{ marginBottom: 0 }}><h2>Link da empresa</h2><small>código {ctx.conta.codigo}</small></div>
+              <LinkConta codigo={ctx.conta.codigo} notify={notify} />
+            </div>
+          )}
           <Notificacoes notify={notify} />
           <SomAlerta />
         </div>
@@ -2355,16 +2343,31 @@ function SomAlerta() {
 
 // Equipe: só o administrador (dono do sistema) libera pessoas e escolhe o que cada uma vê e pode fazer.
 const PERM_PADRAO = { processos: true, contratos: true }; // ponto de partida ao liberar alguém novo
-function Equipe({ equipe, admin, notify, carregar, email }) {
-  const [f, setF] = useState({ email: "", nome: "" });
+function Equipe({ equipe, admin, notify, carregar, email, conta }) {
+  const [f, setF] = useState({ nome: "", senha: "" });
   const [aberto, setAberto] = useState(null);
+  const [busy, setBusy] = useState(false);
+  // Igual ao LojaPro: a pessoa entra com o NOME e a senha provisória; no primeiro acesso cria a senha dela.
   const add = async (e) => {
     e.preventDefault();
-    const em = f.email.trim().toLowerCase();
-    if (!/^\S+@\S+\.\S+$/.test(em)) return notify("Digite um e-mail válido.");
-    const { error } = await sb.from("equipe").upsert({ email: em, nome: f.nome.trim(), papel: "acompanha", ativo: true, permissoes: PERM_PADRAO }, { onConflict: "email" });
-    if (error) return notify(errMsg(error));
-    setF({ email: "", nome: "" }); setAberto(em); notify(`${f.nome || em} liberado(a). Marque o que essa pessoa pode ver.`); carregar();
+    const nome = f.nome.trim();
+    if (!nome) return notify("Informe o nome.");
+    if (f.senha.length < 6) return notify("A senha provisória precisa ter pelo menos 6 caracteres.");
+    if (!conta) return notify("Conta não identificada. Saia e entre de novo.");
+    setBusy(true);
+    try {
+      await chamarRobo({ acao: "pessoa_criar", conta_id: conta.id, nome, papel: "acompanha", senha: f.senha }, "licita-contas");
+      setF({ nome: "", senha: "" });
+      notify(`Acesso de ${nome} criado. Entra com o nome "${nome}" e a senha provisória. Marque em “Permissões” o que essa pessoa pode ver.`);
+      carregar();
+    } catch (e2) { notify(errMsg(e2)); }
+    setBusy(false);
+  };
+  const novaSenha = async (m) => {
+    const s = prompt(`Nova senha provisória para ${m.nome || m.email} (mínimo 6 caracteres):`);
+    if (!s) return;
+    try { await chamarRobo({ acao: "pessoa_senha", email: m.email, senha: s }, "licita-contas"); notify(`Senha provisória de ${m.nome || m.email} trocada. No próximo acesso essa pessoa cria uma senha nova.`); carregar(); }
+    catch (e2) { notify(errMsg(e2)); }
   };
   const upd = async (m, patch, msg) => { const { error } = await sb.from("equipe").update(patch).eq("email", m.email); if (error) return notify(errMsg(error)); if (msg) notify(msg); carregar(); };
   const marcar = (m, k, v) => {
@@ -2385,12 +2388,13 @@ function Equipe({ equipe, admin, notify, carregar, email }) {
             <span className="brand-mark" style={{ background: m.ativo ? "var(--accent)" : "var(--muted)", fontSize: 12, fontWeight: 700 }}>{iniciais(m.nome || m.email)}</span>
             <div className="lmain" style={{ minWidth: 200 }}>
               <span className="lt">{m.nome || m.email}{m.email === email ? " (você)" : ""}</span>
-              <span className="ls">{m.email}{!m.ativo ? " · sem acesso" : ""}</span>
+              <span className="ls">{ehInterno(m.email) ? `Entra com o nome “${m.nome}”` : `Entra com o e-mail ${m.email}`}{m.trocar_senha && m.ativo ? " · ainda não criou a senha" : ""}{!m.ativo ? " · sem acesso" : ""}</span>
               <span className="ls">{resumo(m)}</span>
             </div>
             {admin && m.papel !== "admin" && (
               <div className="row-inline">
                 <button type="button" className="btn ghost sm" onClick={() => setAberto(aberto === m.email ? null : m.email)}>{aberto === m.email ? "Fechar" : "Permissões"}</button>
+                <button type="button" className="btn ghost sm" onClick={() => novaSenha(m)}>Nova senha provisória</button>
                 {m.ativo ? <ConfirmX label="Bloquear" confirmLabel="Bloquear acesso?" onConfirm={() => upd(m, { ativo: false }, "Acesso bloqueado")} />
                   : <button className="btn ghost sm" onClick={() => upd(m, { ativo: true }, "Acesso liberado")}>Liberar</button>}
               </div>
@@ -2407,13 +2411,13 @@ function Equipe({ equipe, admin, notify, carregar, email }) {
       </div>
       {admin && (
         <form className="form" onSubmit={add} noValidate style={{ borderTop: "1px solid var(--line-2)", paddingTop: 12 }}>
-          <b style={{ fontSize: 13.5 }}>Liberar acesso</b>
+          <b style={{ fontSize: 13.5 }}>Cadastrar pessoa</b>
           <div className="fgrid">
-            <div className="field"><label htmlFor="eq-nome">Nome</label><input id="eq-nome" className="input" value={f.nome} onChange={(e) => setF({ ...f, nome: e.target.value })} placeholder="Ex.: Marcio" /></div>
-            <div className="field"><label htmlFor="eq-email">E-mail</label><input id="eq-email" className="input" type="email" value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} /></div>
+            <div className="field"><label htmlFor="eq-nome">Nome (é o que a pessoa digita para entrar)</label><input id="eq-nome" className="input" maxLength={60} value={f.nome} onChange={(e) => setF({ ...f, nome: e.target.value })} placeholder="Ex.: Marcio" /></div>
+            <div className="field"><label htmlFor="eq-senha">Senha provisória</label><input id="eq-senha" className="input" autoComplete="off" value={f.senha} onChange={(e) => setF({ ...f, senha: e.target.value })} /></div>
           </div>
-          <p className="hint">Depois de liberar, a pessoa cria a conta no app com este mesmo e-mail. Ela começa vendo só Processos e Contratos, sem alterar nada; marque em “Permissões” o que mais ela pode ver ou fazer.</p>
-          <button className="btn" style={{ alignSelf: "flex-start" }}>Liberar acesso</button>
+          <p className="hint">A pessoa entra com o <b>nome</b> e esta senha; no primeiro acesso cria a senha dela. Nomes iguais não são aceitos (use “Maria” e “Maria S”). Ela começa vendo só Processos e Contratos, sem alterar nada; marque em “Permissões” o que mais pode ver ou fazer. Esqueceu a senha: use “Nova senha provisória”.</p>
+          <button className="btn" style={{ alignSelf: "flex-start" }} disabled={busy}>{busy ? <span className="spin" /> : null}Cadastrar</button>
         </form>
       )}
     </div>

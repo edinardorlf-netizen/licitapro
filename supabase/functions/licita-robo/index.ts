@@ -2,8 +2,9 @@
 // LicitaPro · ponte entre o robô de lances local (pasta robo-lances) e o banco
 //
 // O robô roda no computador da empresa e chama esta função com a chave dele
-// (cabeçalho x-robo-key). No banco fica só o hash SHA-256 da chave
-// (segredos.robo_lances_hash). verify_jwt = false: a autenticação é a chave.
+// (cabeçalho x-robo-key). No banco fica só o hash SHA-256 da chave, na conta da empresa
+// (contas.robo_hash): a chave diz de qual conta é o robô e ele só vê os dados dela.
+// verify_jwt = false: a autenticação é a chave.
 //
 // Ações (POST JSON { acao, ... }):
 //   pulso    → sinal de vida; devolve disputas ligadas, itens, pisos, botões Parar e pedidos
@@ -39,19 +40,19 @@ const VIGENTES = ["participar", "proposta", "suspenso", "disputa", "julgamento",
 // O robô viu mudança no portal (chat, situação, lance): pede ao acompanhamento da nuvem
 // (função licita, a cada 2 min) para olhar este processo já na próxima rodada.
 // Assim movimentações, etapas e avisos continuam saindo de um lugar só, sem duplicar.
-async function verificar(body: any) {
+async function verificar(C: string, body: any) {
   const ids = (Array.isArray(body.processos) ? body.processos : [body.processo_id]).filter((x: any) => typeof x === "string" && UUID.test(x)).slice(0, 50);
   if (!ids.length) return { ok: false };
   const agora = new Date().toISOString();
-  await db.from("processos").update({ proxima_verificacao: agora }).in("id", ids).gt("proxima_verificacao", agora);
+  await db.from("processos").update({ proxima_verificacao: agora }).eq("conta_id", C).in("id", ids).gt("proxima_verificacao", agora);
   return { ok: true, processos: ids.length };
 }
 
-async function pulso(body: any) {
+async function pulso(C: string, body: any) {
   const agora = new Date().toISOString();
-  const est = { id: "pcp", versao: Number(body.versao) || null, sinal_em: agora, status: String(body.status || "").slice(0, 40), mensagem: String(body.mensagem || "").slice(0, 300), maquina: String(body.maquina || "").slice(0, 60) };
-  await db.from("robo_estado").upsert(est, { onConflict: "id" });
-  const { data: estado } = await db.from("robo_estado").select("parado_geral").eq("id", "pcp").single();
+  const est = { conta_id: C, id: "pcp", versao: Number(body.versao) || null, sinal_em: agora, status: String(body.status || "").slice(0, 40), mensagem: String(body.mensagem || "").slice(0, 300), maquina: String(body.maquina || "").slice(0, 60) };
+  await db.from("robo_estado").upsert(est, { onConflict: "conta_id,id" });
+  const { data: estado } = await db.from("robo_estado").select("parado_geral").eq("conta_id", C).eq("id", "pcp").maybeSingle();
   const { data: ver } = await db.from("robo_arquivos").select("versao").order("versao", { ascending: false }).limit(1);
 
   // Etapa de lances (14/11/2026): entra sozinho no robô (criado_por = 'automático') só o processo do Portal de
@@ -59,24 +60,24 @@ async function pulso(body: any) {
   // O acompanhamento dos demais continua pela nuvem (função licita, a cada 2 min).
   // Se a equipe tirar (ligado = false), ele não volta; os ligados à mão ficam.
   const hojeSP = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo" }).format(new Date());
-  const { data: cand } = await db.from("processos").select("id,data_sessao,etapa").eq("portal", "pcp").eq("ativo", true).not("pcp_codigo", "is", null).in("etapa", VIGENTES)
+  const { data: cand } = await db.from("processos").select("id,data_sessao,etapa").eq("conta_id", C).eq("portal", "pcp").eq("ativo", true).not("pcp_codigo", "is", null).in("etapa", VIGENTES)
     .or(`and(data_sessao.gte.${hojeSP}T00:00:00-03:00,data_sessao.lte.${hojeSP}T23:59:59-03:00),etapa.eq.disputa`);
   const candIds = (cand || []).map((p: any) => p.id);
   const { data: cotados } = candIds.length
     ? await db.from("itens").select("processo_id").in("processo_id", candIds).eq("participar", true).not("preco_unit", "is", null)
     : { data: [] as any[] };
   const doDia = new Set((cotados || []).map((i: any) => i.processo_id));
-  const { data: todas } = await db.from("robo_disputas").select("processo_id");
+  const { data: todas } = await db.from("robo_disputas").select("processo_id").eq("conta_id", C);
   const jaTem = new Set((todas || []).map((d: any) => d.processo_id));
   const novos = [...doDia].filter((id) => !jaTem.has(id)).map((id) => ({ processo_id: id, ligado: true, criado_por: "automático" }));
   if (novos.length) await db.from("robo_disputas").upsert(novos, { onConflict: "processo_id", ignoreDuplicates: true });
 
-  const { data: dispTodas } = await db.from("robo_disputas").select("processo_id,ligado,modo,parado,config,criado_por").eq("ligado", true);
+  const { data: dispTodas } = await db.from("robo_disputas").select("processo_id,ligado,modo,parado,config,criado_por").eq("conta_id", C).eq("ligado", true);
   const disp = (dispTodas || []).filter((d: any) => d.criado_por !== "automático" || doDia.has(d.processo_id));
   const ids = disp.map((d: any) => d.processo_id);
   const disputas: any[] = [];
   if (ids.length) {
-    const { data: procs } = await db.from("processos").select("id,pcp_codigo,pcp_path,portal,orgao,numero,data_sessao,empresa_id,situacao_portal,etapa").in("id", ids);
+    const { data: procs } = await db.from("processos").select("id,pcp_codigo,pcp_path,portal,orgao,numero,data_sessao,empresa_id,situacao_portal,etapa").eq("conta_id", C).in("id", ids);
     const { data: itens } = await db.from("itens").select("processo_id,numero,descricao,quantidade,unidade,valor_ref,valor_minimo,participar").in("processo_id", ids);
     let { data: rItens } = await db.from("robo_itens").select("processo_id,numero,ativo,parado,estrategia,lances_dados").in("processo_id", ids);
     // Itens da disputa preenchidos sozinhos: todo item marcado "Vamos disputar" entra no robô.
@@ -87,8 +88,8 @@ async function pulso(body: any) {
       ({ data: rItens } = await db.from("robo_itens").select("processo_id,numero,ativo,parado,estrategia,lances_dados").in("processo_id", ids));
     }
     const empIds = [...new Set((procs || []).map((p: any) => p.empresa_id).filter(Boolean))];
-    const { data: emps } = empIds.length ? await db.from("empresas").select("id,nome,apelidos,cnpj").in("id", empIds) : { data: [] as any[] };
-    const { data: cfgG } = await db.from("config").select("empresa_nome").eq("id", 1).maybeSingle();
+    const { data: emps } = empIds.length ? await db.from("empresas").select("id,nome,apelidos,cnpj").eq("conta_id", C).in("id", empIds) : { data: [] as any[] };
+    const { data: cfgG } = await db.from("config").select("empresa_nome").eq("conta_id", C).maybeSingle();
     const porEmp = new Map((emps || []).map((e: any) => [e.id, e]));
     const porItem = new Map((itens || []).map((i: any) => [`${i.processo_id}:${i.numero}`, i]));
     for (const d of disp || []) {
@@ -106,13 +107,13 @@ async function pulso(body: any) {
       });
     }
   }
-  const { data: pedidos } = await db.from("robo_pedidos").select("id,processo_id,tipo,criado_em").eq("status", "pendente").order("criado_em").limit(5);
+  const { data: pedidos } = await db.from("robo_pedidos").select("id,processo_id,tipo,criado_em").eq("conta_id", C).eq("status", "pendente").order("criado_em").limit(5);
   return { agora, parado_geral: !!estado?.parado_geral, versao_publicada: ver && ver[0] ? ver[0].versao : null, disputas, pedidos: pedidos || [] };
 }
 
-async function login(body: any) {
+async function login(C: string, body: any) {
   const emp = typeof body.empresa_id === "string" && UUID.test(body.empresa_id) ? body.empresa_id : null;
-  let q = db.from("acessos").select("id,usuario,senha_id,empresa_id").eq("portal", "pcp").not("senha_id", "is", null);
+  let q = db.from("acessos").select("id,usuario,senha_id,empresa_id").eq("conta_id", C).eq("portal", "pcp").not("senha_id", "is", null);
   if (emp) q = q.eq("empresa_id", emp);
   const { data: a } = await q.limit(1).maybeSingle();
   if (!a) throw new Error("Não há login do Portal de Compras Públicas guardado para essa empresa. Cadastre em Ajustes → Empresas e acessos.");
@@ -122,8 +123,9 @@ async function login(body: any) {
 }
 
 const TIPOS = new Set(["decisao", "erro", "aviso", "status", "proposta", "chat"]);
-async function eventos(body: any) {
+async function eventos(C: string, body: any) {
   const lista = (Array.isArray(body.lista) ? body.lista : []).slice(0, 200).filter((e: any) => TIPOS.has(e.tipo) && e.motivo).map((e: any) => ({
+    conta_id: C,
     processo_id: typeof e.processo_id === "string" && UUID.test(e.processo_id) ? e.processo_id : null,
     numero: Number.isInteger(e.numero) ? e.numero : null,
     tipo: e.tipo, acao: e.acao ? String(e.acao).slice(0, 30) : null,
@@ -138,16 +140,17 @@ async function eventos(body: any) {
   return { gravados: lista.length };
 }
 
-async function pedido(body: any) {
+async function pedido(C: string, body: any) {
   if (!UUID.test(String(body.id || ""))) throw new Error("pedido inválido");
   const st = ["andamento", "feito", "erro"].includes(body.status) ? body.status : "erro";
-  await db.from("robo_pedidos").update({ status: st, mensagem: String(body.mensagem || "").slice(0, 1000), atualizado_em: new Date().toISOString() }).eq("id", body.id);
+  await db.from("robo_pedidos").update({ status: st, mensagem: String(body.mensagem || "").slice(0, 1000), atualizado_em: new Date().toISOString() }).eq("conta_id", C).eq("id", body.id);
   return { ok: true };
 }
 
-async function proposta(body: any) {
+async function proposta(C: string, body: any) {
   if (!UUID.test(String(body.processo_id || ""))) throw new Error("processo inválido");
-  const { data: p } = await db.from("processos").select("id,pcp_codigo,orgao,numero,empresa_id").eq("id", body.processo_id).single();
+  const { data: p } = await db.from("processos").select("id,pcp_codigo,orgao,numero,empresa_id").eq("conta_id", C).eq("id", body.processo_id).maybeSingle();
+  if (!p) throw new Error("processo não encontrado");
   const { data: itens } = await db.from("itens").select("numero,descricao,quantidade,unidade,preco_unit,preco_total,marca,anvisa,participar").eq("processo_id", body.processo_id).order("numero");
   return { processo: p, itens: (itens || []).filter((i: any) => i.participar && i.preco_unit != null) };
 }
@@ -157,14 +160,14 @@ async function arquivos() {
   return { arquivos: data || [] };
 }
 
-async function captura(body: any) {
+async function captura(C: string, body: any) {
   const pid = typeof body.processo_id === "string" && UUID.test(body.processo_id) ? body.processo_id : null;
   // Guarda no máximo 40 cópias por processo
   if (pid) {
-    const { count } = await db.from("robo_capturas").select("id", { count: "exact", head: true }).eq("processo_id", pid);
+    const { count } = await db.from("robo_capturas").select("id", { count: "exact", head: true }).eq("conta_id", C).eq("processo_id", pid);
     if ((count || 0) >= 40) return { ok: false, motivo: "limite de cópias" };
   }
-  await db.from("robo_capturas").insert({ processo_id: pid, tipo: String(body.tipo || "tela").slice(0, 40), url: String(body.url || "").slice(0, 500), html: String(body.html || "").slice(0, 1_500_000) });
+  await db.from("robo_capturas").insert({ conta_id: C, processo_id: pid, tipo: String(body.tipo || "tela").slice(0, 40), url: String(body.url || "").slice(0, 500), html: String(body.html || "").slice(0, 1_500_000) });
   return { ok: true };
 }
 
@@ -172,18 +175,22 @@ Deno.serve(async (req) => {
   if (req.method !== "POST") return json({ erro: "use POST" }, 405);
   try {
     const chave = req.headers.get("x-robo-key") || "";
-    const { data: seg } = await db.from("segredos").select("valor").eq("chave", "robo_lances_hash").maybeSingle();
-    if (!seg || !chave || !iguais(await sha256(chave), String(seg.valor))) return json({ erro: "chave do robô inválida" }, 401);
+    if (!chave) return json({ erro: "chave do robô inválida" }, 401);
+    const hash = await sha256(chave);
+    const { data: contas } = await db.from("contas").select("id,robo_hash").eq("ativa", true).not("robo_hash", "is", null);
+    const conta = (contas || []).find((c: any) => iguais(hash, String(c.robo_hash)));
+    if (!conta) return json({ erro: "chave do robô inválida" }, 401);
+    const C: string = conta.id;
     const body = await req.json().catch(() => ({}));
     switch (body.acao) {
-      case "pulso": return json(await pulso(body));
-      case "login": return json(await login(body));
-      case "eventos": return json(await eventos(body));
-      case "pedido": return json(await pedido(body));
-      case "proposta": return json(await proposta(body));
+      case "pulso": return json(await pulso(C, body));
+      case "login": return json(await login(C, body));
+      case "eventos": return json(await eventos(C, body));
+      case "pedido": return json(await pedido(C, body));
+      case "proposta": return json(await proposta(C, body));
       case "arquivos": return json(await arquivos());
-      case "captura": return json(await captura(body));
-      case "verificar": return json(await verificar(body));
+      case "captura": return json(await captura(C, body));
+      case "verificar": return json(await verificar(C, body));
       default: return json({ erro: "ação desconhecida" }, 400);
     }
   } catch (e) {
