@@ -188,7 +188,7 @@ export default function Catalogo({ ctx }) {
               <input className="input" style={{ maxWidth: 260 }} value={q} onChange={(e) => { setQ(e.target.value); setLimite(100); }} placeholder="Buscar produto ou marca" aria-label="Buscar produto" />
             </div>
           </div>
-          <LigarProdutos dados={dados} podeCat={podeCat} verCusto={verCusto} notify={notify} onFeito={carregar} />
+          <LigarProdutos dados={dados} podeCat={podeCat} verCusto={verCusto} notify={notify} onFeito={carregar} email={ctx.email} />
           <UnificarProdutos dados={dados} podeCat={podeCat} notify={notify} onFeito={carregar} />
           {podeCat && sel.length > 0 && (
             <div className="banner info" style={{ justifyContent: "space-between" }}>
@@ -214,7 +214,7 @@ export default function Catalogo({ ctx }) {
                           {podeCat && <td><input type="checkbox" checked={sel.includes(x.p.id)} onChange={(e) => setSel((s) => (e.target.checked ? [...s, x.p.id] : s.filter((y) => y !== x.p.id)))} aria-label={`Selecionar ${x.p.nome}`} /></td>}
                           <td style={{ minWidth: 220 }}>
                             <button type="button" className="linkbtn" style={{ textAlign: "left", fontWeight: 600 }} onClick={() => setAberto(aberto === x.p.id ? null : x.p.id)}>{aberto === x.p.id ? "▾ " : "▸ "}{x.p.nome}</button>
-                            <div className="hint">{x.p.unidade || ""}{x.ganhos.length + x.itens.length > 1 ? ` · ${x.ganhos.length + x.itens.length} descrições juntadas` : ""}{x.marcas.length ? ` · ${x.marcas.slice(0, 3).join(", ")}` : ""}</div>
+                            <div className="hint">{x.p.unidade || ""}{x.ganhos.length + x.itens.length > 1 ? ` · ${x.ganhos.length + x.itens.length} descrições juntadas` : ""}{x.marcas.length ? ` · ${x.marcas.slice(0, 3).join(", ")}` : ""}{x.p.juntado_em && !x.p.conferido_em && x.ganhos.length + x.itens.length > 1 ? <span className="tag warn" style={{ marginLeft: 6 }}>🔍 a conferir</span> : null}</div>
                           </td>
                           <td className="n">{x.qtd ? num(x.qtd) : "—"}</td>
                           <td className="n">{x.procs || "—"}</td>

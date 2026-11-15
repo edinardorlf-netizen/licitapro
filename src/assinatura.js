@@ -139,6 +139,7 @@ const QUALIF = [
   ["cor", /\b(TRANSPARENTE|AMBAR|MARROM|BRANC[OA]|AZUL|VERDE|VERMELH[OA]|PRET[OA]|AMAREL[OA]|ROSA|LILAS|CINZA)\b/g],
   ["material", /\b(LATEX|NITRIL[OA]?|NITRILICA|VINIL|PLASTIC[OA]|SILICONE|PVC|ACO|TNT|ALGODAO|BORRACHA)\b/g],
   ["sexo", /\b(MASCULIN[OA]|FEMININ[OA])\b/g],
+  ["apresentacao", /\b(GEL|LIQUID[OA]|SPRAY|ESPUMA|AEROSOL)\b/g],
   ["vaso", /\b(COM VASO(CONSTRITOR)?|SEM VASO(CONSTRITOR)?|C\/ VASO|S\/ VASO)\b/g],
   ["esteril", /\b(NAO ESTERIL|ESTERIL)\b/g],
   ["po", /\b(SEM PO|COM PO|C\/ PO|S\/ PO)\b/g],
@@ -162,9 +163,28 @@ function dimensoes(t) {
   while ((m = re.exec(t))) { const a = numero(m[1]), b = numero(m[2]); d.add(`${fmt(a)}X${fmt(b < 2 && /[.,]/.test(m[2]) ? b * 10 : b)}`); }
   const r2 = /(\d+(?:[.,]\d+)?)\s*(?:%|INPM|°\s*GL|GL\b)/g;
   while ((m = r2.exec(t))) teor.add(fmt(numero(m[1])));
-  const al = t.match(/\bALCOOL\s+(?:ETILICO\s+)?(?:HIDRATADO\s+)?(?:LIQUIDO\s+)?(\d{2}(?:[.,]\d)?)\b/);
+  const al = t.match(/\bALCOOL\s+(?:ETILICO\s+)?(?:HIDRATADO\s+)?(?:LIQUIDO\s+)?(?:COMUM\s+)?(\d{2}(?:[.,]\d)?)\b/);
   if (al) teor.add(fmt(numero(al[1])));
+  if (/\bALCOOL\b/.test(t) && /\bABSOLUTO\b/.test(t)) teor.add("99.5"); // álcool absoluto ≠ 70 ≠ 92,8
   return { dims: [...d].slice(0, 2), teor: [...teor] };
+}
+/** Litragem e gramatura em qualquer ponto do texto (1 L = 1000 ml; 1 kg = 1000 g; 60 g/m² = gramatura). */
+function grandezas(t) {
+  const vols = new Set(), pesos = new Set();
+  const agulha = /\b(AGULHA|CATETER|JELCO|SCALP|ESCALP)\b/.test(t); // "27 G" de agulha é calibre, não peso
+  let m;
+  const re = /(\d{1,3}(?:\.\d{3})+|\d+(?:[.,]\d+)?)\s*(ML|LITROS?|LTS?|L|KG|QUILOS?|GRAMAS|GR|G)(?![A-Z])(\s*\/\s*M\s*2|\s*\/\s*M²)?(?!\s*\/)/g;
+  while ((m = re.exec(t))) {
+    const v = numero(m[1]);
+    if (!(v > 0)) continue;
+    const antes = t.slice(Math.max(0, m.index - 14), m.index);
+    if (/DOSADOR\s*(DE\s*)?$/.test(antes)) continue;
+    const u = m[2];
+    if (/^(ML|L|LTS?|LITROS?)$/.test(u)) vols.add(fmt(u === "ML" ? v : v * 1000) + "ML");
+    else if (m[3]) pesos.add(fmt(v) + "G/M2");
+    else if (!(agulha && /^(G|GR)$/.test(u))) pesos.add(fmt(/^(KG|QUILOS?)$/.test(u) ? v * 1000 : v) + "G");
+  }
+  return { vols: [...vols], pesos: [...pesos] };
 }
 
 /** Tokens do nome (esqueleto, sem acento), para medir o quanto duas descrições se parecem. */
@@ -194,7 +214,7 @@ export function caracteristicas(desc, unidade) {
     ativos = [...new Set(ativos.slice(0, 3))];
     const d = doses(t, forma, unidade);
     const base = ["R", ativos.map(esq).sort().join("+") || "?", d.doses.join("+") || "-", d.peso || ""].join("|");
-    return { tipo: "remedio", base, forma, vol: d.vol, qtd: emb !== "UN" ? qtdEmbalagem(t) : null, emb, tokens: tokens(t), ativos, quals: qualificadores(t), dims: [], teor: [], temMedida: d.doses.length > 0 };
+    return { tipo: "remedio", base, forma, vol: d.vol, vols: d.vol ? [d.vol] : [], pesos: d.peso ? [d.peso] : [], tam: null, qtd: emb !== "UN" ? qtdEmbalagem(t) : null, emb, tokens: tokens(t), ativos, quals: qualificadores(t), dims: [], teor: [], temMedida: d.doses.length > 0 };
   }
   const k = chaveProduto(desc, unidade).chave.split("|");
   const nucleo = (k[0] || "").split(" ")[0] || "?";
@@ -204,8 +224,9 @@ export function caracteristicas(desc, unidade) {
   const tamOk = tam && tam !== "VÁRIOS" ? "T" + tam : "";
   const base = ["M", nucleo, ...med, cal || "", tamOk, emb].join("|");
   const { dims, teor } = dimensoes(t);
-  return { tipo: "material", base, forma: null, vol: null, qtd: emb !== "UN" ? qtdEmbalagem(t) : null, emb, tokens: tokens(t), tamVarios: tam === "VÁRIOS",
-    quals: qualificadores(t), dims, teor, temMedida: !!(med.length || cal || tamOk || dims.length) };
+  const { vols, pesos } = grandezas(t);
+  return { tipo: "material", base, forma: null, vol: null, vols, pesos, cal: cal || null, tam: tamOk || null, qtd: emb !== "UN" ? qtdEmbalagem(t) : null, emb, tokens: tokens(t), tamVarios: tam === "VÁRIOS",
+    quals: qualificadores(t), dims, teor, temMedida: !!(med.length || cal || tamOk || dims.length || vols.length || pesos.length) };
 }
 
 /** Quanto dois conjuntos de palavras se cobrem (0 a 1): parte comum ÷ o menor. */

@@ -21,16 +21,34 @@ const disj = (a, b) => a.size > 0 && b.size > 0 && ![...a].some((x) => b.has(x))
 const comum = (a, b) => [...a].some((x) => b.has(x));
 const limpa = (s) => String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toUpperCase().replace(/[^A-Z0-9]+/g, " ").trim();
 
+/** Por que duas descrições não podem ser o mesmo produto ([] = podem). */
+export function conflito(a, b) {
+  const x = a.c, y = b.c, m = [];
+  if (!x || !y) return m;
+  const d = (p, q) => p && q && p.length && q.length && !p.some((v) => q.includes(v));
+  if (x.tipo === "remedio" && y.tipo === "remedio" && x.base !== y.base) m.push("dose diferente");
+  if (x.forma && y.forma && x.forma !== y.forma) m.push("forma diferente");
+  if (d(x.vols, y.vols)) m.push("litragem diferente");
+  if (d(x.pesos, y.pesos)) m.push("gramatura/peso diferente");
+  if (d(x.teor, y.teor)) m.push("teor diferente (ex.: álcool 70 × 92,8 × absoluto)");
+  if (d(x.dims, y.dims)) m.push("medida diferente");
+  if (x.tam && y.tam && x.tam !== y.tam) m.push("tamanho diferente");
+  if (x.cal && y.cal && x.cal !== y.cal) m.push("número diferente");
+  if (x.qtd && y.qtd && x.qtd !== y.qtd) m.push("quantidade na embalagem diferente");
+  Object.keys(x.quals || {}).forEach((g) => { if (y.quals && y.quals[g] && y.quals[g] !== x.quals[g]) m.push(`${g} diferente`); });
+  return m;
+}
+
 /** Monta os produtos com as características das suas descrições e as ligações entre eles. */
 export function analisar(dados) {
   const anvisaItem = new Map((dados.itens || []).map((i) => [i.id, i.anvisa]));
   const ganhosItem = new Set(dados.ganhos.map((g) => g.item_id).filter(Boolean));
   const linhas = [
-    ...dados.ganhos.map((g) => ({ id: g.id, tipo: "ganho", desc: g.descricao, unidade: g.unidade, preco: Number(g.valor_unitario) || null, marca: g.marca, anvisa: g.item_id ? anvisaItem.get(g.item_id) : null, prod: g.produto_id, qtd: Number(g.quantidade) || 0, entregue: Number(g.quantidade_entregue) || 0 })),
-    ...dados.itens.filter((i) => !ganhosItem.has(i.id)).map((i) => ({ id: i.id, tipo: "item", desc: i.descricao, unidade: i.unidade, preco: Number(i.preco_unit) || null, marca: i.marca, anvisa: i.anvisa, prod: i.produto_id })),
+    ...dados.ganhos.map((g) => ({ id: g.id, tipo: "ganho", desc: g.descricao, unidade: g.unidade, preco: Number(g.valor_unitario) || null, marca: g.marca, anvisa: g.item_id ? anvisaItem.get(g.item_id) : null, prod: g.produto_id, qtd: Number(g.quantidade) || 0, entregue: Number(g.quantidade_entregue) || 0, numero: g.numero, onde: g.processos ? `${g.processos.orgao || ""}${g.processos.numero ? ` · ${g.processos.numero}` : ""}` : "" })),
+    ...dados.itens.filter((i) => !ganhosItem.has(i.id)).map((i) => ({ id: i.id, tipo: "item", desc: i.descricao, unidade: i.unidade, preco: Number(i.preco_unit) || null, marca: i.marca, anvisa: i.anvisa, prod: i.produto_id, numero: i.numero, onde: "cotado / em disputa" })),
   ];
   const porProd = new Map();
-  (dados.produtos || []).forEach((p) => porProd.set(p.id, { p, id: p.id, linhas: [], bases: new Map(), formas: new Set(), vols: new Set(), qtds: new Set(), tokens: new Set(), marcas: new Set(), anvisas: new Set(), precos: [], nGanhos: 0, quals: {}, dims: new Set(), teor: new Set(), temMedida: false }));
+  (dados.produtos || []).forEach((p) => porProd.set(p.id, { p, id: p.id, linhas: [], bases: new Map(), formas: new Set(), vols: new Set(), qtds: new Set(), tokens: new Set(), marcas: new Set(), anvisas: new Set(), precos: [], nGanhos: 0, quals: {}, dims: new Set(), teor: new Set(), pesos: new Set(), temMedida: false }));
   linhas.forEach((l) => {
     const P = l.prod && porProd.get(l.prod);
     if (!P) return;
@@ -39,7 +57,8 @@ export function analisar(dados) {
     P.linhas.push(l);
     P.bases.set(c.base, (P.bases.get(c.base) || 0) + 1);
     if (c.forma) P.formas.add(c.forma);
-    if (c.vol) P.vols.add(c.vol);
+    (c.vols || []).forEach((x) => P.vols.add(x));
+    (c.pesos || []).forEach((x) => P.pesos.add(x));
     if (c.qtd) P.qtds.add(c.qtd);
     Object.entries(c.quals || {}).forEach(([g, v]) => { (P.quals[g] = P.quals[g] || new Set()).add(v); });
     (c.dims || []).forEach((x) => P.dims.add(x));
@@ -59,12 +78,21 @@ export function analisar(dados) {
     P.med = mediana(P.precos);
   });
 
+  // Produtos misturados (litragem, gramatura, tamanho, teor, dose… diferentes dentro do mesmo produto):
+  // não entram nas sugestões; vão para a lista "Misturados" para separar
+  prods.forEach((P) => {
+    const ls = P.linhas.slice(0, 60), m = new Set();
+    for (let i = 0; i < ls.length; i++) for (let j = i + 1; j < ls.length; j++) conflito(ls[i], ls[j]).forEach((x) => m.add(x));
+    P.mistura = [...m];
+  });
+  const misturados = prods.filter((P) => P.mistura.length && P.nGanhos > 0 && !P.p.conferido_em);
+
   // Ligações entre produtos com a mesma base
   const balde = new Map();
-  prods.forEach((P) => { if (!balde.has(P.base)) balde.set(P.base, []); balde.get(P.base).push(P); });
+  prods.filter((P) => !P.mistura.length).forEach((P) => { if (!balde.has(P.base)) balde.set(P.base, []); balde.get(P.base).push(P); });
   const arestas = [];
   const nivel = (A, B) => {
-    if (disj(A.formas, B.formas) || disj(A.vols, B.vols) || disj(A.qtds, B.qtds) || disj(A.dims, B.dims) || disj(A.teor, B.teor)) return null;
+    if (disj(A.formas, B.formas) || disj(A.vols, B.vols) || disj(A.qtds, B.qtds) || disj(A.dims, B.dims) || disj(A.teor, B.teor) || disj(A.pesos, B.pesos)) return null;
     if (Object.keys(A.quals).some((g) => B.quals[g] && disj(A.quals[g], B.quals[g]))) return null; // infantil x adulto, âmbar x transparente…
     if (A.med && B.med && (A.med / B.med > FORA || B.med / A.med > FORA)) return null;
     const sim = sobreposicao(A.tokens, B.tokens);
@@ -121,7 +149,10 @@ export function analisar(dados) {
   const comSaldo = ganhosL.filter((l) => l.qtd - l.entregue > 0);
   const saldoSemCusto = comSaldo.filter((l) => !(l.prod && porProd.get(l.prod) && porProd.get(l.prod).p.custo_atual != null)).length;
   const emGrupo = ganhosL.filter((l) => l.prod && porProd.get(l.prod) && porProd.get(l.prod).linhas.length > 1).length;
-  return { certos, provaveis, sozinhos, sugestoes, cobertura: { ganhos: ganhosL.length, comCusto, emGrupo, comSaldo: comSaldo.length, saldoSemCusto, produtos: prods.filter((P) => P.nGanhos).length } };
+  // Juntados e ainda não conferidos (o banco marca juntado_em ao juntar; conferido_em quando alguém confirma)
+  const aConferir = prods.filter((P) => P.p.juntado_em && !P.p.conferido_em && P.linhas.length > 1)
+    .sort((a, b) => String(b.p.juntado_em).localeCompare(String(a.p.juntado_em)));
+  return { certos, provaveis, sozinhos, sugestoes, aConferir, misturados, cobertura: { ganhos: ganhosL.length, comCusto, emGrupo, comSaldo: comSaldo.length, saldoSemCusto, produtos: prods.filter((P) => P.nGanhos).length } };
 }
 
 const resumo = (P) => {
@@ -131,12 +162,29 @@ const resumo = (P) => {
 // Para onde juntar: o produto com custo, senão o que tem mais descrições
 const alvoDe = (lista) => [...lista].sort((a, b) => (b.p.custo_atual != null) - (a.p.custo_atual != null) || b.linhas.length - a.linhas.length)[0];
 
+// Por que uma descrição destoa do produto (para a conferência)
+function destoa(l, P) {
+  const motivos = [];
+  const outras = new Set();
+  P.linhas.forEach((o) => { if (o !== l) conflito(l, o).forEach((x) => outras.add(x)); });
+  outras.forEach((x) => motivos.push(x));
+  if (!outras.size && l.c && l.c.base !== P.base) motivos.push("descrição diferente das outras");
+  if (l.preco > 0 && P.med && (l.preco / P.med > FORA || P.med / l.preco > FORA)) motivos.push("preço fora do padrão");
+  return motivos;
+}
+
 function LinhaProd({ P, marcado, onMarca, verCusto }) {
   const r = resumo(P);
   return (
     <tr>
       {onMarca && <td><input type="checkbox" checked={marcado} onChange={(e) => onMarca(e.target.checked)} aria-label={`Incluir ${r.nome}`} /></td>}
-      <td style={{ minWidth: 200 }}><b>{r.nome}</b><div className="hint clamp2">{r.desc}</div></td>
+      <td style={{ minWidth: 200 }}><b>{r.nome}</b>
+        {P.linhas.length === 1 ? <div className="hint clamp2">{r.desc}</div> : (
+          <details><summary className="hint" style={{ cursor: "pointer" }}>ver as {P.linhas.length} descrições</summary>
+            <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>{P.linhas.map((l) => <li key={l.id} className="hint">{String(l.desc || "").slice(0, 220)}{l.marca ? ` — ${l.marca}` : ""}{l.preco ? ` — ${brl(l.preco)}` : ""}</li>)}</ul>
+          </details>
+        )}
+      </td>
       <td className="n">{r.n}{r.ganhos ? <div className="hint">{r.ganhos} 🏆</div> : null}</td>
       <td className="n">{r.med != null ? brl(r.med) : "—"}</td>
       <td>{r.marcas || "—"}</td>
@@ -145,7 +193,7 @@ function LinhaProd({ P, marcado, onMarca, verCusto }) {
   );
 }
 
-export default function LigarProdutos({ dados, podeCat, verCusto, notify, onFeito }) {
+export default function LigarProdutos({ dados, podeCat, verCusto, notify, onFeito, email }) {
   const [aba, setAba] = useState(null); // certeza | provavel | sozinhos
   const [tira, setTira] = useState({}); // produto id → true (fora)
   const [busy, setBusy] = useState("");
@@ -168,8 +216,9 @@ export default function LigarProdutos({ dados, podeCat, verCusto, notify, onFeit
         feitos++;
         if (feitos % 10 === 0) setBusy(`${rotulo}… ${feitos} de ${lista.length}`);
       }
-      notify(feitos ? `${feitos} grupo(s) juntado(s).` : "Nada marcado para juntar.");
+      notify(feitos ? `${feitos} grupo(s) juntado(s). Confira as descrições em “Conferir juntados”.` : "Nada marcado para juntar.");
       setTira({});
+      if (feitos) { setAba("conferir"); setLim(30); }
       onFeito();
     } catch (e) { notify(errMsg(e)); }
     setBusy("");
@@ -177,7 +226,19 @@ export default function LigarProdutos({ dados, podeCat, verCusto, notify, onFeit
   const ligar = async (P, Q) => {
     const { error } = await sb.rpc("juntar_produtos", { p_para: Q.id, p_de: [P.id] });
     if (error) return notify(errMsg(error));
-    notify(`“${P.p.nome}” ligado a “${Q.p.nome}”.`);
+    notify(`“${P.p.nome}” ligado a “${Q.p.nome}”. Ele aparece em “Conferir juntados”.`);
+    onFeito();
+  };
+  const separar = async (l) => {
+    const { error } = await sb.rpc("separar_item", { p_item: l.tipo === "item" ? l.id : null, p_ganho: l.tipo === "ganho" ? l.id : null, p_nome: String(l.desc || "").slice(0, 80) });
+    if (error) return notify(errMsg(error));
+    notify("Descrição separada: voltou a ser um produto próprio.");
+    onFeito();
+  };
+  const conferido = async (P) => {
+    const { error } = await sb.from("produtos").update({ conferido_em: new Date().toISOString(), conferido_por: email || null }).eq("id", P.id);
+    if (error) return notify(errMsg(error));
+    notify(`“${P.p.nome}” conferido.`);
     onFeito();
   };
 
@@ -197,7 +258,7 @@ export default function LigarProdutos({ dados, podeCat, verCusto, notify, onFeit
         <div className="card kpi"><small>Para conferir</small><b className="num">{a.certos.length + a.provaveis.length}</b><small>{a.certos.length} certeza · {a.provaveis.length} provável · {a.sozinhos.length} sem par</small></div>
       </div>
       <div className="chips">
-        {[["certeza", `✅ Certeza (${a.certos.length})`], ["provavel", `🟡 Provável (${a.provaveis.length})`], ["sozinhos", `⚪ Sem par (${a.sozinhos.length})`]].map(([k, l]) => (
+        {[["certeza", `✅ Certeza (${a.certos.length})`], ["provavel", `🟡 Provável (${a.provaveis.length})`], ["sozinhos", `⚪ Sem par (${a.sozinhos.length})`], ["conferir", `🔍 Conferir juntados (${a.aConferir.length})`], ["misturados", `⚠ Misturados (${a.misturados.length})`]].map(([k, l]) => (
           <button key={k} type="button" className={`chip${aba === k ? " on" : ""}`} onClick={() => { setAba(aba === k ? null : k); setLim(30); setTira({}); }}>{l}</button>
         ))}
       </div>
@@ -255,7 +316,40 @@ export default function LigarProdutos({ dados, podeCat, verCusto, notify, onFeit
           </table>
         </div>
       </>)}
-      {aba && (aba === "certeza" ? a.certos : aba === "provavel" ? a.provaveis : a.sozinhos).length > lim && (
+      {(aba === "conferir" || aba === "misturados") && (!(aba === "conferir" ? a.aConferir : a.misturados).length ? <div className="hint">{aba === "conferir" ? "Nada juntado esperando conferência." : "Nenhum produto com descrições que se contradizem."}</div> : <>
+        <span className="hint">{aba === "conferir"
+          ? "Produtos que acabaram de ser juntados, com todas as descrições. Leia cada uma: se alguma não for o mesmo produto, clique em “Separar”. As linhas em amarelo destoam das outras (litragem, gramatura, tamanho, teor, dose ou preço). Quando estiver tudo certo, clique em “Está certo”."
+          : "Produtos que já estavam juntos, mas com descrições que se contradizem (ex.: álcool 70 junto com 92,8; 500 ml junto com 1 L; tamanho P junto com G). Separe as linhas em amarelo que não forem o mesmo produto; se estiver certo assim, clique em “Está certo”."}</span>
+        {(aba === "conferir" ? a.aConferir : a.misturados).slice(0, lim).map((P) => (
+          <div key={P.id} className="card" style={{ padding: 0 }}>
+            <div className="row-inline" style={{ padding: "10px 12px", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+              <div><b>{P.p.nome}</b>{P.mistura && P.mistura.length > 0 && <span className="tag warn" style={{ marginLeft: 6 }}>{P.mistura.slice(0, 3).join(" · ")}</span>}<span className="hint"> · {P.linhas.length} descrições · venda mediana {P.med != null ? brl(P.med) : "—"}{verCusto && P.p.custo_atual != null ? ` · custo ${brl(P.p.custo_atual)}` : ""}</span></div>
+              {podeCat && <button type="button" className="btn sm" onClick={() => conferido(P)}>✓ Está certo</button>}
+            </div>
+            <div style={{ overflowX: "auto" }}>
+              <table className="itab">
+                <thead><tr><th>Descrição no edital</th><th>Onde</th><th>Unid.</th><th className="n">Preço</th><th>Marca</th>{podeCat && <th />}</tr></thead>
+                <tbody>
+                  {P.linhas.map((l) => {
+                    const m = destoa(l, P);
+                    return (
+                      <tr key={l.id} style={m.length ? { background: "var(--amber-soft)" } : null}>
+                        <td style={{ minWidth: 280 }}>{l.desc}{m.length > 0 && <div className="hint" style={{ color: "var(--red)" }}>⚠ {m.join(" · ")}</div>}</td>
+                        <td className="hint" style={{ minWidth: 140 }}>{l.tipo === "ganho" ? "🏆 " : ""}{l.onde}{l.numero != null ? ` · item ${l.numero}` : ""}</td>
+                        <td>{l.unidade || "—"}</td>
+                        <td className="n">{l.preco ? brl(l.preco) : "—"}</td>
+                        <td>{l.marca || "—"}</td>
+                        {podeCat && <td><button type="button" className="linkbtn" style={{ fontSize: 12 }} onClick={() => separar(l)}>Separar</button></td>}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        ))}
+      </>)}
+      {aba && (aba === "certeza" ? a.certos : aba === "provavel" ? a.provaveis : aba === "conferir" ? a.aConferir : aba === "misturados" ? a.misturados : a.sozinhos).length > lim && (
         <button type="button" className="btn ghost sm" style={{ alignSelf: "flex-start" }} onClick={() => setLim((l) => l + 50)}>Mostrar mais</button>
       )}
     </div>

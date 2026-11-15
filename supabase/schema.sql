@@ -1439,3 +1439,10 @@ begin
   end loop;
 end $$;
 -- Regra nova de acesso: use sempre (select public.tem_perm('x')) / (select public.is_equipe()), nunca a função solta.
+-- =====================================================================
+-- Conferir juntados (15/11/2026): depois de juntar, o produto fica "a conferir" até alguém ler todas as
+-- descrições (Produtos → Unificar produtos → 🔍 Conferir juntados) e clicar "Está certo".
+-- juntar_produtos e unificar_produto marcam juntado_em = now() e limpam conferido_em (migração produtos_conferir_juntados).
+-- =====================================================================
+alter table public.produtos add column if not exists juntado_em timestamptz, add column if not exists conferido_em timestamptz, add column if not exists conferido_por text;
+-- (corpo completo de juntar_produtos e unificar_produto: iguais aos acima + "update produtos set juntado_em = now(), conferido_em = null, conferido_por = null where id = <produto final>")
