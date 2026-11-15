@@ -1387,3 +1387,30 @@ drop policy if exists "meus vistos" on public.vistos;
 create policy "meus vistos" on public.vistos for all to authenticated
   using (email = lower(auth.jwt()->>'email') and public.is_equipe())
   with check (email = lower(auth.jwt()->>'email') and public.is_equipe() and exists (select 1 from public.processos p where p.id = processo_id));
+
+-- =====================================================================
+-- Permissões só pela Auraxis (15/11/2026): perfil e permissões das pessoas só o administrador Auraxis muda
+-- (painel Auraxis → tabela de permissões, ação pessoa_permissoes da licita-contas). O administrador da conta
+-- cadastra pessoas (sempre "acompanha"), dá senha provisória e bloqueia. Novas chaves: proposta, demandas,
+-- agenda (sem valor gravado valem as de processos/contratos, ver temPerm em src/util.js).
+-- =====================================================================
+create or replace function public.equipe_guarda()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare d text;
+begin
+  select lower(dono) into d from config where conta_id = new.conta_id;
+  if new.papel = 'admin' and d is not null and lower(new.email) <> d then
+    raise exception 'Somente o dono do sistema pode ser administrador';
+  end if;
+  if tg_op = 'UPDATE' and d is not null and lower(old.email) = d and (new.papel <> 'admin' or not new.ativo or lower(new.email) <> d) then
+    raise exception 'O acesso do dono do sistema não pode ser alterado';
+  end if;
+  if tg_op = 'UPDATE' and new.conta_id is distinct from old.conta_id then
+    raise exception 'Não é possível mudar a pessoa de conta';
+  end if;
+  if coalesce(auth.jwt()->>'role', '') = 'authenticated' and not public.is_auraxis()
+     and (tg_op = 'INSERT' or new.papel is distinct from old.papel or new.permissoes is distinct from old.permissoes) then
+    raise exception 'Só o administrador Auraxis muda perfil e permissões';
+  end if;
+  return new;
+end $$;

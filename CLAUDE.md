@@ -29,6 +29,7 @@ Leia isto primeiro. É a passagem de bastão da conversa no claude.ai para o Cla
 - **Cada empresa cliente é uma conta isolada** (tabela `contas`, código curto, ex.: `mirafarma`). Tudo tem `conta_id`; regra restritiva "so a minha conta" no banco; funções na nuvem filtram por conta (robô pela chave em `contas.robo_hash`; radar roda por conta). Mirafarma e Miramed são CNPJs (tabela `empresas`) dentro da conta `mirafarma`.
 - **Login por NOME + senha**: o aparelho guarda a empresa (código digitado uma vez, ou link/QR `#entrar/<codigo>`); por dentro o e-mail é `<nome>.<codigo>@contas.licitapro.invalid` (`src/Acesso.jsx` e função `licita-contas` montam igual). Senha provisória → no 1º acesso a pessoa cria a dela (`equipe.trocar_senha`). Esqueceu: "Nova senha provisória". Ninguém cria conta sozinho.
 - **Administrador Auraxis** (`auraxis_admins`, entra com e-mail): painel `src/PainelAuraxis.jsx` (ícone de pessoas no rodapé do menu) cria contas, cadastra pessoas, logo, link/QR e chave do robô. O dono de cada conta cadastra pessoas e troca senhas em Ajustes → Equipe.
+- Desde 15/11 o dono (Edinardo) usa o login por nome `edinardo` (admin e `config.dono` da conta mirafarma); o e-mail ficou só como administrador Auraxis (fora da `equipe`, cai direto no painel). `vistos` e `processos.responsavel` foram passados para o login novo.
 - Nova conta: `criar_conta_dados` copia as categorias do radar (desmarcadas) e cria o `config`. Pendente: radar lê o PNCP uma vez por conta (otimizar quando houver muitas contas).
 
 ## Sistema em etapas (pedido do dono, 14/11/2026)

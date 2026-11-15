@@ -29,7 +29,7 @@ import LeituraEdital from "./LeituraEdital.jsx";
 import { Entrar, VincularAparelho, TrocarSenha, CampoSenha, LinkConta, prenderAparelho, aparelhoLido, ehInterno } from "./Acesso.jsx";
 import PainelAuraxis from "./PainelAuraxis.jsx";
 import {
-  sb, appUrl, portal, PORTAIS, ETAPAS, etapa, ATIVAS, A_LANCAR, ACOMPANHANDO, CATEGORIAS, RESULTADOS, resultado, ganhou, PAPEIS, PERMISSOES, fmtData, fmtDataCurta, fmtHora, fmtDH, diaChave, hojeChave,
+  sb, appUrl, portal, PORTAIS, ETAPAS, etapa, ATIVAS, A_LANCAR, ACOMPANHANDO, CATEGORIAS, RESULTADOS, resultado, ganhou, PAPEIS, PERMISSOES, temPerm, fmtData, fmtDataCurta, fmtHora, fmtDH, diaChave, hojeChave,
   diaLongo, falta, brl, num, parseNum, fmtIn, errMsg, chamarRobo, iniciais,
 } from "./util.js";
 
@@ -336,7 +336,7 @@ const TABS = [
   { id: "ajustes", nome: "Ajustes", icon: "cog" },
 ];
 // Permissão que libera cada aba (Ajustes sempre aparece: conta e alertas)
-const PERM_ABA = { inicio: "processos", radar: "radar", processos: "processos", proposta: "processos", contratos: "contratos", demandas: "contratos", catalogo: "catalogo", reequilibrio: "reequilibrio", agenda: "processos", robo: "robo" };
+const PERM_ABA = { inicio: "processos", radar: "radar", processos: "processos", proposta: "proposta", contratos: "contratos", demandas: "demandas", catalogo: "catalogo", reequilibrio: "reequilibrio", agenda: "agenda", robo: "robo" };
 
 /* ============================================================
    Sessão
@@ -506,8 +506,8 @@ function Painel({ session, papel, acesso, abrirAuraxis, notify }) {
   const email = session.user.email.toLowerCase();
   const eu = equipe.find((p) => p.email === email);
   const admin = papel === "admin";
-  // O administrador vê tudo; os demais só as áreas que ele liberou (Ajustes → Equipe)
-  const perm = (k) => admin || !!(eu && eu.permissoes && eu.permissoes[k]);
+  // O administrador da conta vê tudo; os demais só as áreas liberadas pela Auraxis (painel Auraxis)
+  const perm = (k) => admin || !!(eu && temPerm(eu.permissoes, k));
   const podeEquipe = admin || (papel === "equipe" && perm("editar"));
   const pode = podeEquipe && !celular; // edição completa só no computador
 
@@ -2341,11 +2341,10 @@ function SomAlerta() {
   );
 }
 
-// Equipe: só o administrador (dono do sistema) libera pessoas e escolhe o que cada uma vê e pode fazer.
-const PERM_PADRAO = { processos: true, contratos: true }; // ponto de partida ao liberar alguém novo
+// Equipe: o administrador da conta cadastra pessoas, dá senha provisória e bloqueia acesso.
+// O que cada pessoa vê (permissões) só o administrador Auraxis muda, no painel Auraxis (igual ao LojaPro).
 function Equipe({ equipe, admin, notify, carregar, email, conta }) {
   const [f, setF] = useState({ nome: "", senha: "" });
-  const [aberto, setAberto] = useState(null);
   const [busy, setBusy] = useState(false);
   // Igual ao LojaPro: a pessoa entra com o NOME e a senha provisória; no primeiro acesso cria a senha dela.
   const add = async (e) => {
@@ -2358,7 +2357,7 @@ function Equipe({ equipe, admin, notify, carregar, email, conta }) {
     try {
       await chamarRobo({ acao: "pessoa_criar", conta_id: conta.id, nome, papel: "acompanha", senha: f.senha }, "licita-contas");
       setF({ nome: "", senha: "" });
-      notify(`Acesso de ${nome} criado. Entra com o nome "${nome}" e a senha provisória. Marque em “Permissões” o que essa pessoa pode ver.`);
+      notify(`Acesso de ${nome} criado. Entra com o nome "${nome}" e a senha provisória. Começa vendo só Acompanhamento e Contratos; para liberar mais, fale com a Auraxis.`);
       carregar();
     } catch (e2) { notify(errMsg(e2)); }
     setBusy(false);
@@ -2370,18 +2369,11 @@ function Equipe({ equipe, admin, notify, carregar, email, conta }) {
     catch (e2) { notify(errMsg(e2)); }
   };
   const upd = async (m, patch, msg) => { const { error } = await sb.from("equipe").update(patch).eq("email", m.email); if (error) return notify(errMsg(error)); if (msg) notify(msg); carregar(); };
-  const marcar = (m, k, v) => {
-    const permissoes = { ...(m.permissoes || {}), [k]: v };
-    const patch = { permissoes };
-    // "Alterar dados" depende do perfil de equipe no banco
-    if (k === "editar") patch.papel = v ? "equipe" : "acompanha";
-    upd(m, patch);
-  };
-  const resumo = (m) => (m.papel === "admin" ? "Administrador: vê e altera tudo" : PERMISSOES.filter((p) => m.permissoes && m.permissoes[p.id]).map((p) => p.nome.split(" (")[0]).join(" · ") || "Nenhuma área liberada");
+  const resumo = (m) => (m.papel === "admin" ? "Administrador: vê e altera tudo" : PERMISSOES.filter((p) => temPerm(m.permissoes, p.id)).map((p) => p.nome.split(" (")[0]).join(" · ") || "Nenhuma área liberada");
   return (
     <div className="card form">
-      <div className="card-h" style={{ marginBottom: 0 }}><h2>Equipe e permissões</h2><small>{equipe.filter((m) => m.ativo).length} com acesso</small></div>
-      <p className="hint" style={{ margin: 0 }}>{admin ? "Só você (administrador) libera pessoas e escolhe o que cada uma vê. Quem não tem uma área marcada não vê essa aba nem os dados dela." : "Somente o administrador muda a equipe e as permissões."}</p>
+      <div className="card-h" style={{ marginBottom: 0 }}><h2>Equipe</h2><small>{equipe.filter((m) => m.ativo).length} com acesso</small></div>
+      <p className="hint" style={{ margin: 0 }}>{admin ? "Você cadastra as pessoas, dá senha provisória e bloqueia acesso. O que cada uma pode ver é liberado pela Auraxis: peça ao suporte quando precisar mudar." : "Somente o administrador muda a equipe. As permissões são liberadas pela Auraxis."}</p>
       <div className="list">
         {equipe.map((m) => (
           <div key={m.email} className="lrow" style={{ alignItems: "flex-start", flexWrap: "wrap" }}>
@@ -2393,17 +2385,9 @@ function Equipe({ equipe, admin, notify, carregar, email, conta }) {
             </div>
             {admin && m.papel !== "admin" && (
               <div className="row-inline">
-                <button type="button" className="btn ghost sm" onClick={() => setAberto(aberto === m.email ? null : m.email)}>{aberto === m.email ? "Fechar" : "Permissões"}</button>
                 <button type="button" className="btn ghost sm" onClick={() => novaSenha(m)}>Nova senha provisória</button>
                 {m.ativo ? <ConfirmX label="Bloquear" confirmLabel="Bloquear acesso?" onConfirm={() => upd(m, { ativo: false }, "Acesso bloqueado")} />
                   : <button className="btn ghost sm" onClick={() => upd(m, { ativo: true }, "Acesso liberado")}>Liberar</button>}
-              </div>
-            )}
-            {admin && aberto === m.email && m.papel !== "admin" && (
-              <div className="stack" style={{ gap: 6, width: "100%", paddingLeft: 44 }}>
-                {PERMISSOES.map((p) => (
-                  <label key={p.id} className="toggle"><input type="checkbox" checked={!!(m.permissoes && m.permissoes[p.id])} onChange={(e) => marcar(m, p.id, e.target.checked)} />{p.nome}</label>
-                ))}
               </div>
             )}
           </div>
@@ -2416,7 +2400,7 @@ function Equipe({ equipe, admin, notify, carregar, email, conta }) {
             <div className="field"><label htmlFor="eq-nome">Nome (é o que a pessoa digita para entrar)</label><input id="eq-nome" className="input" maxLength={60} value={f.nome} onChange={(e) => setF({ ...f, nome: e.target.value })} placeholder="Ex.: Marcio" /></div>
             <div className="field"><label htmlFor="eq-senha">Senha provisória</label><input id="eq-senha" className="input" autoComplete="off" value={f.senha} onChange={(e) => setF({ ...f, senha: e.target.value })} /></div>
           </div>
-          <p className="hint">A pessoa entra com o <b>nome</b> e esta senha; no primeiro acesso cria a senha dela. Nomes iguais não são aceitos (use “Maria” e “Maria S”). Ela começa vendo só Processos e Contratos, sem alterar nada; marque em “Permissões” o que mais pode ver ou fazer. Esqueceu a senha: use “Nova senha provisória”.</p>
+          <p className="hint">A pessoa entra com o <b>nome</b> e esta senha; no primeiro acesso cria a senha dela. Nomes iguais não são aceitos (use “Maria” e “Maria S”). Ela começa vendo só Acompanhamento e Contratos, sem alterar nada; para liberar mais, fale com a Auraxis. Esqueceu a senha: use “Nova senha provisória”.</p>
           <button className="btn" style={{ alignSelf: "flex-start" }} disabled={busy}>{busy ? <span className="spin" /> : null}Cadastrar</button>
         </form>
       )}

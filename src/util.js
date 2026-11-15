@@ -68,17 +68,28 @@ export const CATEGORIAS = [
   { id: "todos", nome: "Todos", desc: "", teste: () => true },
 ];
 
-// Áreas que o administrador libera para cada pessoa (equipe.permissoes)
+// Áreas que cada pessoa pode ver (equipe.permissoes). Só o administrador Auraxis muda (painel Auraxis);
+// o administrador de cada conta vê tudo. "pai": enquanto a permissão nova não foi gravada para a pessoa,
+// vale a antiga de onde ela saiu (ninguém perde nem ganha acesso quando surge uma permissão nova).
 export const PERMISSOES = [
-  { id: "radar", nome: "Radar de editais" },
-  { id: "processos", nome: "Processos, Início e Agenda" },
-  { id: "contratos", nome: "Contratos e itens ganhos" },
-  { id: "catalogo", nome: "Catálogo de produtos (preço médio de venda)" },
-  { id: "custos", nome: "Ver e lançar custos e markup" },
+  { id: "radar", nome: "Busca (radar de editais)" },
+  { id: "processos", nome: "Início e Acompanhamento" },
+  { id: "proposta", nome: "Proposta", pai: "processos" },
+  { id: "robo", nome: "Lances (robô)" },
+  { id: "contratos", nome: "Contratos (itens ganhos)" },
+  { id: "demandas", nome: "Demandas (ordens de fornecimento)", pai: "contratos" },
   { id: "reequilibrio", nome: "Reequilíbrio de preços" },
-  { id: "robo", nome: "Robô de lances (simulador)" },
+  { id: "agenda", nome: "Agenda", pai: "processos" },
+  { id: "catalogo", nome: "Produtos (preço médio de venda)" },
+  { id: "custos", nome: "Ver e lançar custos e markup" },
   { id: "editar", nome: "Alterar dados (cadastrar, lançar preços, marcar itens)" },
 ];
+export function temPerm(permissoes, k) {
+  const p = permissoes || {};
+  if (p[k] !== undefined) return !!p[k];
+  const d = PERMISSOES.find((x) => x.id === k);
+  return !!(d && d.pai && p[d.pai]);
+}
 
 export const PAPEIS = {
   admin: "Administrador",

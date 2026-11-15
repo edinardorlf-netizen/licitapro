@@ -6,7 +6,7 @@
 // Tudo passa pela função licita-contas (o banco não deixa uma conta ver a outra).
 // =====================================================================
 import React, { useState, useEffect, useCallback } from "react";
-import { sb, chamarRobo, errMsg, PAPEIS, fmtData } from "./util.js";
+import { sb, chamarRobo, errMsg, PAPEIS, PERMISSOES, temPerm, fmtData } from "./util.js";
 import { codigoConta, LinkConta, prenderAparelho, useAparelho } from "./Acesso.jsx";
 
 const contas = (body) => chamarRobo(body, "licita-contas");
@@ -25,7 +25,65 @@ async function reduzirLogo(arq) {
   return out;
 }
 
-/* Pessoas de uma conta: usado no painel Auraxis e em Ajustes → Equipe (pelo dono da conta) */
+/* Permissões (igual ao LojaPro): tabela "o que cada pessoa pode ver e fazer". Só o administrador Auraxis
+   muda; o administrador da conta vê tudo e não aparece aqui. Vale também no banco (regras por permissão). */
+const marcadas = (p) => Object.fromEntries(PERMISSOES.map((x) => [x.id, temPerm(p.permissoes, x.id)]));
+function TabelaPermissoes({ lista, notify, onSalvo }) {
+  const pessoas = lista.filter((p) => p.papel !== "admin");
+  const inicial = () => Object.fromEntries(pessoas.map((p) => [p.email, marcadas(p)]));
+  const [perm, setPerm] = useState(inicial);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { setPerm(inicial()); }, [lista]);
+  if (!pessoas.length) return <p className="hint" style={{ margin: 0 }}>Só o administrador cadastrado. Ele vê e altera tudo; cadastre outras pessoas para escolher o que elas veem.</p>;
+  const mudou = pessoas.filter((p) => JSON.stringify(perm[p.email]) !== JSON.stringify(marcadas(p)));
+  const salvar = async () => {
+    setBusy(true);
+    try {
+      for (const p of mudou) await contas({ acao: "pessoa_permissoes", email: p.email, permissoes: perm[p.email] });
+      notify("Permissões salvas. Valem no próximo carregamento do app de cada pessoa.");
+      onSalvo && onSalvo();
+    } catch (e) { notify(errMsg(e)); }
+    setBusy(false);
+  };
+  const tudo = (email, v) => setPerm({ ...perm, [email]: Object.fromEntries(PERMISSOES.map((x) => [x.id, v])) });
+  return (
+    <div className="stack" style={{ gap: 10 }}>
+      <div style={{ overflowX: "auto" }}>
+        <table className="itab">
+          <thead><tr><th>Permissão</th>{pessoas.map((p) => <th key={p.email} style={{ textAlign: "center" }}>{p.nome || p.email}{!p.ativo ? " (desligado)" : ""}</th>)}</tr></thead>
+          <tbody>
+            {PERMISSOES.map((x) => (
+              <tr key={x.id}>
+                <td>{x.nome}</td>
+                {pessoas.map((p) => (
+                  <td key={p.email} style={{ textAlign: "center" }}>
+                    <input type="checkbox" aria-label={`${x.nome} — ${p.nome}`} disabled={busy} checked={!!(perm[p.email] && perm[p.email][x.id])} onChange={(e) => setPerm({ ...perm, [p.email]: { ...perm[p.email], [x.id]: e.target.checked } })} />
+                  </td>
+                ))}
+              </tr>
+            ))}
+            <tr>
+              <td className="hint">Marcar / desmarcar tudo</td>
+              {pessoas.map((p) => (
+                <td key={p.email} style={{ textAlign: "center", whiteSpace: "nowrap" }}>
+                  <button type="button" className="btn ghost sm" disabled={busy} onClick={() => tudo(p.email, true)}>Tudo</button>{" "}
+                  <button type="button" className="btn ghost sm" disabled={busy} onClick={() => tudo(p.email, false)}>Nada</button>
+                </td>
+              ))}
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p className="hint" style={{ margin: 0 }}>Quem não tem uma área marcada não vê essa aba no menu nem os dados dela. “Alterar dados” sem marcar = só olha. O administrador da empresa vê tudo e não muda permissões: só a Auraxis.</p>
+      <div className="row-inline" style={{ gap: 8 }}>
+        <button type="button" className="btn" disabled={busy || !mudou.length} onClick={salvar}>{busy ? <span className="spin" /> : null}Salvar permissões{mudou.length ? ` (${mudou.length})` : ""}</button>
+        {mudou.length > 0 && <button type="button" className="btn ghost" disabled={busy} onClick={() => setPerm(inicial())}>Desfazer</button>}
+      </div>
+    </div>
+  );
+}
+
+/* Pessoas de uma conta (painel Auraxis) */
 export function PessoasConta({ contaId, notify, euEmail, auraxis, onMudou }) {
   const [lista, setLista] = useState(null);
   const [f, setF] = useState({ nome: "", papel: "acompanha", senha: "" });
@@ -83,6 +141,12 @@ export function PessoasConta({ contaId, notify, euEmail, auraxis, onMudou }) {
           </table>
         </div>
       )}
+      {lista && lista.length > 0 && (
+        <div className="stack" style={{ gap: 8, borderTop: "1px solid var(--line-2)", paddingTop: 12 }}>
+          <b style={{ fontSize: 13.5 }}>Permissões: o que cada pessoa pode ver e fazer</b>
+          <TabelaPermissoes lista={lista} notify={notify} onSalvo={carregar} />
+        </div>
+      )}
       <form className="form" onSubmit={cadastrar} noValidate style={{ borderTop: "1px solid var(--line-2)", paddingTop: 12 }}>
         <b style={{ fontSize: 13.5 }}>Cadastrar pessoa</b>
         <div className="fgrid">
@@ -94,7 +158,7 @@ export function PessoasConta({ contaId, notify, euEmail, auraxis, onMudou }) {
           </div>
           <div className="field"><label htmlFor={`pc-senha-${contaId}`}>Senha provisória</label><input id={`pc-senha-${contaId}`} className="input" autoComplete="off" minLength={6} value={f.senha} onChange={(e) => setF({ ...f, senha: e.target.value })} /></div>
         </div>
-        <p className="hint" style={{ margin: 0 }}>Nomes iguais na mesma empresa não são aceitos: use “Maria” e “Maria S”, por exemplo. A pessoa troca a senha no primeiro acesso. “Equipe” começa podendo ver e alterar tudo; “Acompanha” só vê Processos e Contratos (ajuste em Permissões).</p>
+        <p className="hint" style={{ margin: 0 }}>Nomes iguais na mesma empresa não são aceitos: use “Maria” e “Maria S”, por exemplo. A pessoa troca a senha no primeiro acesso. “Equipe” começa podendo ver e alterar tudo; “Acompanha” só vê Acompanhamento e Contratos, sem alterar. Depois ajuste na tabela de Permissões. Trocar o perfil volta as permissões ao padrão dele.</p>
         <button className="btn" style={{ alignSelf: "flex-start" }} disabled={!!busy}>{busy === "novo" ? <span className="spin" /> : null}Cadastrar</button>
       </form>
     </div>

@@ -3,13 +3,14 @@
 //
 // O administrador Auraxis (tabela auraxis_admins) cria a conta de cada cliente (código + nome)
 // e cadastra as pessoas com NOME + senha provisória. No primeiro acesso a pessoa cria a própria senha.
-// O administrador da conta (dono) também cadastra pessoas e dá senha provisória nova na conta dele.
+// O administrador da conta (dono) também cadastra pessoas e dá senha provisória nova na conta dele,
+// mas perfil e permissões (o que cada pessoa vê) só o administrador Auraxis muda.
 // Por dentro, o login usa um e-mail interno que ninguém vê e para onde nada é enviado:
 //   <nome>.<código>@contas.licitapro.invalid   (o app monta o mesmo e-mail na tela de entrada)
 // verify_jwt = true. Cada conta só enxerga os próprios dados (regras do banco por conta_id).
 //
 // POST { acao, ... }:
-//   eu · contas · conta_criar · conta_alterar · pessoas · pessoa_criar · pessoa_senha · pessoa_alterar · robo_chave
+//   eu · contas · conta_criar · conta_alterar · pessoas · pessoa_criar · pessoa_senha · pessoa_alterar · pessoa_permissoes (só Auraxis) · robo_chave
 // =====================================================================
 import { createClient } from "npm:@supabase/supabase-js@2.49.4";
 
@@ -29,10 +30,12 @@ const codigoConta = (t: string) => slug(t).replace(/-/g, "");
 const emailInterno = (codigo: string, nome: string) => `${slug(nome)}.${codigo}@${DOMINIO}`;
 const UUID = /^[0-9a-f-]{36}$/i;
 const PAPEIS = ["admin", "equipe", "acompanha"];
-// Ponto de partida das permissões (o dono ajusta depois em Ajustes → Equipe)
+// Ponto de partida das permissões. Depois só o administrador Auraxis muda (tabela de permissões do painel).
+// O administrador da conta cadastra pessoas (sempre como "acompanha"), dá senha provisória e bloqueia, mas não libera áreas.
+const PERM_IDS = ["radar", "processos", "proposta", "robo", "contratos", "demandas", "reequilibrio", "agenda", "catalogo", "custos", "editar"];
 const PERM: Record<string, Record<string, boolean>> = {
   admin: {},
-  equipe: { radar: true, processos: true, contratos: true, catalogo: true, custos: true, reequilibrio: true, robo: true, editar: true },
+  equipe: Object.fromEntries(PERM_IDS.map((k) => [k, true])),
   acompanha: { processos: true, contratos: true },
 };
 
@@ -142,7 +145,8 @@ async function pessoaCriar(q: Quem, b: any) {
   const nome = String(b.nome || "").trim().replace(/\s+/g, " ").slice(0, 60);
   const login = slug(nome);
   if (!login) throw new Erro("Informe o nome.");
-  const papel = PAPEIS.includes(b.papel) ? b.papel : "acompanha";
+  // Só a Auraxis escolhe o perfil; quem o dono da conta cadastra começa como "acompanha"
+  const papel = q.auraxis && PAPEIS.includes(b.papel) ? b.papel : "acompanha";
   const senha = String(b.senha || "");
   if (senha.length < 6) throw new Erro("A senha provisória precisa ter pelo menos 6 caracteres.");
   const { data: ja } = await db.from("equipe").select("email").eq("conta_id", c.id).eq("login", login).maybeSingle();
@@ -187,7 +191,8 @@ async function pessoaAlterar(q: Quem, b: any) {
   const p = await pessoaDe(q, b.email);
   const patch: Record<string, unknown> = {};
   if (typeof b.ativo === "boolean") patch.ativo = b.ativo;
-  if (typeof b.papel === "string" && PAPEIS.includes(b.papel)) {
+  if (typeof b.papel === "string" && PAPEIS.includes(b.papel) && b.papel !== p.papel) {
+    exigir(q.auraxis, "Só o administrador Auraxis muda o perfil das pessoas.");
     patch.papel = b.papel;
     if (b.papel !== p.papel && b.papel !== "admin") patch.permissoes = PERM[b.papel];
   }
@@ -196,6 +201,18 @@ async function pessoaAlterar(q: Quem, b: any) {
   if (!Object.keys(patch).length) return { ok: true };
   const { error } = await db.from("equipe").update(patch).eq("email", p.email);
   if (error) throw new Erro(/dono do sistema/i.test(error.message) ? error.message : `Não deu para alterar: ${error.message}`, 400);
+  return { ok: true };
+}
+
+// Permissões de uma pessoa (só o administrador Auraxis). "Alterar dados" acompanha o perfil no banco.
+async function pessoaPermissoes(q: Quem, b: any) {
+  exigir(q.auraxis, "Só o administrador Auraxis muda permissões.");
+  const p = await pessoaDe(q, b.email);
+  if (p.papel === "admin") throw new Erro("O administrador da empresa vê tudo; não tem permissões para marcar.");
+  const ent = b.permissoes && typeof b.permissoes === "object" ? b.permissoes : {};
+  const permissoes = Object.fromEntries(PERM_IDS.map((k) => [k, ent[k] === true]));
+  const { error } = await db.from("equipe").update({ permissoes, papel: permissoes.editar ? "equipe" : "acompanha" }).eq("email", p.email);
+  if (error) throw new Erro(`Não deu para salvar: ${error.message}`, 400);
   return { ok: true };
 }
 
@@ -225,6 +242,7 @@ Deno.serve(async (req) => {
       case "pessoa_criar": return json(await pessoaCriar(q, b));
       case "pessoa_senha": return json(await pessoaSenha(q, b));
       case "pessoa_alterar": return json(await pessoaAlterar(q, b));
+      case "pessoa_permissoes": return json(await pessoaPermissoes(q, b));
       case "robo_chave": return json(await roboChave(q, b));
       default: return json({ erro: "Ação desconhecida." }, 400);
     }
