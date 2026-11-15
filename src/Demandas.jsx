@@ -107,7 +107,7 @@ export default function Demandas({ ctx }) {
     carregar();
   };
 
-  if (gan === null || ordens === null) return <div className="stack"><div className="top"><div><h1>Demandas</h1></div></div><div className="card empty">Carregando…</div></div>;
+  if (gan === null || ordens === null) return <div className="stack"><div className="top"><div><h1>Compras</h1></div></div><div className="card empty">Carregando…</div></div>;
 
   const procDe = (id) => processos.find((c) => c.id === id);
   const listaOrdens = ordens.filter((o) => {
@@ -123,7 +123,7 @@ export default function Demandas({ ctx }) {
   return (
     <div className="stack">
       <div className="top">
-        <div><h1>Demandas</h1><p>Ordens de fornecimento e saldo de cada ata ou contrato</p></div>
+        <div><h1>Compras</h1><p>Ordens de fornecimento e saldo de cada ata ou contrato</p></div>
       </div>
       <div className="grid3">
         <div className="card kpi"><small>Atas e contratos</small><b className="num">{processos.length}</b><small>Processos com itens vencidos</small></div>

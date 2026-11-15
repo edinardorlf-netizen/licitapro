@@ -48,7 +48,7 @@ export default function PropostaEtapa({ ctx }) {
         </div>
       </div>
       {procs === null || resumo === null ? <div className="card empty">Carregando…</div> : !lista.length ? (
-        <div className="card empty"><b>Nenhuma licitação para preparar proposta</b>Marque ⭐ “Vamos participar” num edital da Busca (Radar) ou cadastre o processo em Acompanhamento.</div>
+        <div className="card empty"><b>Nenhuma licitação para preparar proposta</b>Marque ⭐ “Vamos participar” num edital da Busca de Editais ou cadastre o processo em Acompanhamento.</div>
       ) : (
         <div className="stack" style={{ gap: 10 }}>
           {lista.map((p) => {

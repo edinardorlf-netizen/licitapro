@@ -324,12 +324,12 @@ const ResultadoTag = ({ id }) => { const r = resultado(id); return r ? <span cla
 // (os ids antigos "radar", "processos" e "robo" ficam, para não quebrar links e permissões já dadas)
 const TABS = [
   { id: "inicio", nome: "Início", icon: "home" },
-  { id: "radar", nome: "Busca", icon: "radar" },
+  { id: "radar", nome: "Busca de Editais", icon: "radar" },
   { id: "processos", nome: "Acompanhamento", icon: "folder" },
   { id: "proposta", nome: "Proposta", icon: "pen", pc: true },
   { id: "robo", nome: "Lances", icon: "bot" },
   { id: "contratos", nome: "Contratos", icon: "file" },
-  { id: "demandas", nome: "Demandas", icon: "truck" },
+  { id: "demandas", nome: "Compras", icon: "truck" },
   { id: "reequilibrio", nome: "Reequilíbrio", icon: "scale", pc: true },
   { id: "agenda", nome: "Agenda", icon: "cal" },
   { id: "catalogo", nome: "Produtos", icon: "box", pc: true },
@@ -802,7 +802,7 @@ function Radar({ ctx }) {
   return (
     <div className="stack">
       <div className="top">
-        <div><h1>Radar de editais</h1><p>Licitações publicadas no PNCP em {ufsRadar.join(", ")}, filtradas pelos produtos da empresa</p></div>
+        <div><h1>Busca de Editais</h1><p>Licitações publicadas no PNCP em {ufsRadar.join(", ")}, filtradas pelos produtos da empresa</p></div>
         {pode && <button className="btn ghost" onClick={rodar} disabled={rodando}>{rodando ? <span className="spin" /> : <Icon name="refresh" size={16} />}Buscar agora</button>}
       </div>
       <div className="card form">

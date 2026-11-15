@@ -122,7 +122,7 @@ export function PessoasConta({ contaId, notify, euEmail, auraxis, onMudou }) {
                   <td>
                     {p.papel === "admin" ? PAPEIS.admin : (
                       <select className="input" style={{ minWidth: 150 }} value={p.papel} disabled={!!busy} onChange={(e) => fazer(p.email, { acao: "pessoa_alterar", email: p.email, papel: e.target.value }, "Perfil alterado")}>
-                        {Object.entries(PAPEIS).filter(([k]) => k !== "admin" || auraxis).map(([k, n]) => <option key={k} value={k}>{n}</option>)}
+                        {Object.entries(PAPEIS).filter(([k]) => k !== "admin" || (auraxis && !lista.some((x) => x.papel === "admin"))).map(([k, n]) => <option key={k} value={k}>{n}</option>)}
                       </select>
                     )}
                   </td>

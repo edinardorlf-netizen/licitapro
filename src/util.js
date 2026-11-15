@@ -72,12 +72,12 @@ export const CATEGORIAS = [
 // o administrador de cada conta vê tudo. "pai": enquanto a permissão nova não foi gravada para a pessoa,
 // vale a antiga de onde ela saiu (ninguém perde nem ganha acesso quando surge uma permissão nova).
 export const PERMISSOES = [
-  { id: "radar", nome: "Busca (radar de editais)" },
+  { id: "radar", nome: "Busca de Editais" },
   { id: "processos", nome: "Início e Acompanhamento" },
   { id: "proposta", nome: "Proposta", pai: "processos" },
   { id: "robo", nome: "Lances (robô)" },
   { id: "contratos", nome: "Contratos (itens ganhos)" },
-  { id: "demandas", nome: "Demandas (ordens de fornecimento)", pai: "contratos" },
+  { id: "demandas", nome: "Compras (ordens de fornecimento)", pai: "contratos" },
   { id: "reequilibrio", nome: "Reequilíbrio de preços" },
   { id: "agenda", nome: "Agenda", pai: "processos" },
   { id: "catalogo", nome: "Produtos (preço médio de venda)" },
