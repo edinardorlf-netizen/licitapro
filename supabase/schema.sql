@@ -1414,3 +1414,28 @@ begin
   end if;
   return new;
 end $$;
+
+-- =====================================================================
+-- Velocidade das regras de acesso (15/11/2026, autorizado pelo dono): as funções de permissão não dependem
+-- da linha; embrulhadas em (select …) o Postgres calcula uma vez por consulta (antes: 1,3 s por mil linhas,
+-- e a aba Produtos passava do tempo limite). Quem vê o quê não mudou. Migração "regras_rapidas_initplan":
+-- =====================================================================
+do $$
+declare r record; q text; w text; re1 text := '\m(is_equipe|pode_editar|is_admin|meu_papel|is_auraxis)\(\)'; re2 text := '\mtem_perm\((''[a-z_]+''::text)\)';
+begin
+  for r in select tablename, policyname, qual, with_check from pg_policies where schemaname = 'public'
+    and coalesce(qual,'') || ' ' || coalesce(with_check,'') ~ '\m(is_equipe|tem_perm|pode_editar|is_admin|meu_papel|is_auraxis)\('
+  loop
+    q := r.qual; w := r.with_check;
+    if q is not null then q := regexp_replace(regexp_replace(q, re1, '(select public.\1())', 'g'), re2, '(select public.tem_perm(\1))', 'g'); end if;
+    if w is not null then w := regexp_replace(regexp_replace(w, re1, '(select public.\1())', 'g'), re2, '(select public.tem_perm(\1))', 'g'); end if;
+    if q is not null and w is not null then
+      execute format('alter policy %I on public.%I using (%s) with check (%s)', r.policyname, r.tablename, q, w);
+    elsif q is not null then
+      execute format('alter policy %I on public.%I using (%s)', r.policyname, r.tablename, q);
+    else
+      execute format('alter policy %I on public.%I with check (%s)', r.policyname, r.tablename, w);
+    end if;
+  end loop;
+end $$;
+-- Regra nova de acesso: use sempre (select public.tem_perm('x')) / (select public.is_equipe()), nunca a função solta.

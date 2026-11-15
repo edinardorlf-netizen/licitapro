@@ -11,6 +11,7 @@ import React, { useState, useEffect, useMemo } from "react";
 import { sb, brl, num, parseNum, fmtIn, fmtData, errMsg } from "./util.js";
 import { agrupar, diasDesde, DIAS_CUSTO_VELHO, markup, lerRegra } from "./produtos.js";
 import UnificarProdutos from "./UnificarProdutos.jsx";
+import LigarProdutos from "./LigarProdutos.jsx";
 import { carregarProdutos, carregarCustos, carregarGanhos, carregarItensNossos } from "./dados.js";
 
 const pct = (v) => (v == null ? "—" : `${v.toLocaleString("pt-BR", { maximumFractionDigits: 1 })}%`);
@@ -187,6 +188,7 @@ export default function Catalogo({ ctx }) {
               <input className="input" style={{ maxWidth: 260 }} value={q} onChange={(e) => { setQ(e.target.value); setLimite(100); }} placeholder="Buscar produto ou marca" aria-label="Buscar produto" />
             </div>
           </div>
+          <LigarProdutos dados={dados} podeCat={podeCat} verCusto={verCusto} notify={notify} onFeito={carregar} />
           <UnificarProdutos dados={dados} podeCat={podeCat} notify={notify} onFeito={carregar} />
           {podeCat && sel.length > 0 && (
             <div className="banner info" style={{ justifyContent: "space-between" }}>

@@ -126,6 +126,18 @@ export default function Reequilibrio({ ctx }) {
             <div className="card kpi"><small>Proposta ainda válida</small><b className="num">{aindaValidos.length}</b><small>Aparecem aqui quando vencer</small></div>
             <div className="card kpi"><small>Impacto possível</small><b className="num">{brl(procs.filter((x) => x.vencida).reduce((a, x) => a + x.impacto, 0))}</b><small>No saldo a entregar, mantendo a margem</small></div>
           </div>
+          {(() => {
+            // Cobertura: itens com saldo a entregar sem custo atual não entram no cálculo
+            const ls = procs.filter((x) => x.vencida).flatMap((x) => x.linhas).filter((l) => l.saldo > 0);
+            const sem = ls.filter((l) => l.cAtual == null).length;
+            if (!ls.length || !sem) return null;
+            return (
+              <div className="banner warn" style={{ justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+                <span><b>{sem} de {ls.length}</b> itens com saldo a entregar estão sem custo atual e ficam fora do cálculo do reequilíbrio. Junte as descrições iguais e cadastre o custo em Produtos.</span>
+                {perm("catalogo") && <button type="button" className="btn sm" onClick={() => ctx.ir("catalogo")}>Abrir Produtos</button>}
+              </div>
+            );
+          })()}
           <div className="row-inline" style={{ justifyContent: "space-between" }}>
             <span className="hint">O custo atual vem da aba Produtos; o custo da proposta, da cotação do item ou do custo digitado no item ganho.</span>
             <input className="input" style={{ maxWidth: 260 }} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar órgão ou número" aria-label="Buscar" />
