@@ -37,6 +37,8 @@ const AZUL = "FF1F4E78";
 const AZUL2 = "FF17365D";
 const CINZA = "FFEDEDED";
 const MOEDA = '"R$" #,##0.00';
+const MARKUP = 1; // markup padrão do modelo (100%)
+const MARKUP_MIN = 0.25; // markup mínimo do modelo (25%)
 const fill = (argb) => ({ type: "pattern", pattern: "solid", fgColor: { argb } });
 const borda = { top: { style: "thin", color: { argb: "FFBFBFBF" } }, left: { style: "thin", color: { argb: "FFBFBFBF" } }, bottom: { style: "thin", color: { argb: "FFBFBFBF" } }, right: { style: "thin", color: { argb: "FFBFBFBF" } } };
 
@@ -95,7 +97,7 @@ export async function gerarPlanilha(p, itens, docs = []) {
   ws.columns = COLS.map((c) => ({ width: c.w }));
   ws.getCell("A1").value = tituloProc(p);
   ws.getCell("A1").font = { bold: true, size: 13 };
-  ws.getCell("A2").value = "AMARELO = preencher. Valor unitário e lance mínimo são digitados à mão. O lance mínimo aqui é só sugestão: o valor mínimo do robô é confirmado no LicitaPro.";
+  ws.getCell("A2").value = "AMARELO = preencher. Proposta: custo + markup (H2); mínimo: custo + markup mínimo (H3). Pode digitar por cima. Após vencer, marque S em “Vencido?” e informe o valor unitário final em “Valor vencido”. O lance mínimo aqui é sugestão: o valor mínimo do robô é confirmado no LicitaPro.";
   ws.getCell("A2").font = { italic: true, color: { argb: "FF595959" } };
   ws.getCell("A3").value = "Não altere as colunas Item e Qtd. Depois de preencher, envie esta planilha no LicitaPro (aba Itens → Enviar planilha preenchida).";
   ws.getCell("A3").font = { italic: true, color: { argb: "FF595959" } };
@@ -107,7 +109,13 @@ export async function gerarPlanilha(p, itens, docs = []) {
   ws.getCell("L2").value = "Total cotado";
   ws.getCell("M2").value = { formula: `SUM(${faixa("preco_total")})` };
   ws.getCell("M2").numFmt = MOEDA;
-  ["I2", "I3", "L2"].forEach((a) => (ws.getCell(a).font = { bold: true }));
+  // Markups do modelo da empresa: valor unitário = custo × (1 + H2); lance mínimo = custo × (1 + H3)
+  ws.getCell("G2").value = "Markup padrão:";
+  ws.getCell("H2").value = MARKUP;
+  ws.getCell("G3").value = "Markup mínimo:";
+  ws.getCell("H3").value = MARKUP_MIN;
+  ["H2", "H3"].forEach((a) => { ws.getCell(a).numFmt = "0%"; ws.getCell(a).fill = fill(AMARELO); ws.getCell(a).border = borda; });
+  ["G2", "G3", "I2", "I3", "L2"].forEach((a) => (ws.getCell(a).font = { bold: true }));
   // linha de exemplo (igual ao modelo)
   const ex = ["EX.", "Exemplo", "(linha de exemplo – não é item do edital)", 10, "UN", 15, 150, "MarcaX", 12.5, 13.8, "", "", "80000000000", "", "cotação fornecedor Z"];
   const rEx = ws.getRow(4);
@@ -117,11 +125,18 @@ export async function gerarPlanilha(p, itens, docs = []) {
   itens.forEach((it, i) => {
     const n = LIN_1 + i;
     const r = ws.getRow(n);
+    // Valor unitário e lance mínimo: fórmula do modelo (custo × markup). Se o item já tem um valor
+    // gravado que não bate com a fórmula (digitado à mão), mantém o valor digitado.
+    const custo = it.custo != null ? Number(it.custo) : null;
+    const pu = it.preco_unit != null ? Number(it.preco_unit) : null;
+    const vm = it.valor_minimo != null ? Number(it.valor_minimo) : (it.piso_sugerido != null ? Number(it.piso_sugerido) : null);
+    const pelaFormula = (salvo, mk) => salvo == null || (custo != null && Math.abs(salvo - Math.round(custo * (1 + mk) * 100) / 100) < 0.005);
+    const fCusto = (h) => ({ formula: `IF(${letra("custo")}${n}="","",ROUND(${letra("custo")}${n}*(1+$H$${h}),2))` });
     const v = {
       numero: it.numero, participacao: it.participacao || null, descricao: it.descricao || "", quantidade: it.quantidade != null ? Number(it.quantidade) : null,
-      unidade: it.unidade || "", preco_unit: it.preco_unit != null ? Number(it.preco_unit) : null,
+      unidade: it.unidade || "", preco_unit: pelaFormula(pu, MARKUP) ? fCusto(2) : pu,
       preco_total: { formula: `IF(${letra("preco_unit")}${n}="","",ROUND(${letra("quantidade")}${n}*${letra("preco_unit")}${n},2))` },
-      marca: it.marca || null, custo: it.custo != null ? Number(it.custo) : null, valor_minimo: it.valor_minimo != null ? Number(it.valor_minimo) : (it.piso_sugerido != null ? Number(it.piso_sugerido) : null),
+      marca: it.marca || null, custo, valor_minimo: pelaFormula(vm, MARKUP_MIN) ? fCusto(3) : vm,
       vencido: null, valor_vencido: null, anvisa: it.anvisa || null, obs_exigencia: it.obs_exigencia || null, obs: it.obs || null,
     };
     COLS.forEach((c, j) => {
@@ -135,6 +150,7 @@ export async function gerarPlanilha(p, itens, docs = []) {
       if (c.k === "anvisa") cell.numFmt = "@";
     });
     r.getCell(COLS.findIndex((c) => c.k === "vencido") + 1).dataValidation = { type: "list", allowBlank: true, formulae: ['"S,N"'] };
+    r.getCell(COLS.findIndex((c) => c.k === "valor_vencido") + 1).dataValidation = { type: "decimal", operator: "greaterThan", allowBlank: true, formulae: [0], showErrorMessage: true, errorTitle: "Valor unitário vencido", error: "Informe um valor numérico maior que zero." };
     // coluna auxiliar oculta: ordem do item entre os vencidos (usada pela aba Proposta Ajustada)
     r.getCell(COLS.length + 1).value = { formula: `IF(UPPER(LEFT(${letra("vencido")}${n},1))="S",COUNTIF($${letra("vencido")}$${LIN_1}:${letra("vencido")}${n},"S*"),"")` };
     r.height = Math.min(90, Math.max(30, Math.ceil(String(it.descricao || "").length / 80) * 15));
@@ -170,6 +186,10 @@ export async function gerarPlanilha(p, itens, docs = []) {
   const nItens = Math.max(itens.length, 1);
   const ultPa = LIN_1 + nItens - 1;
   pa.getCell("F3").value = { formula: `SUM(F${LIN_1}:F${ultPa})` };
+  // Aviso do modelo: itens vencidos sem valor final
+  pa.mergeCells("A4:H4");
+  pa.getCell("A4").value = { formula: `IF(C3=0,"Nenhum item marcado como vencido.",IF(COUNTIFS(${L}!${faixa("vencido")},"S",${L}!${faixa("valor_vencido")},">0")<C3,"ATENÇÃO: há itens vencidos sem valor unitário válido. Preencha a coluna “Valor vencido” da Planilha de Lançamento antes de enviar.","Valores unitários finais informados para todos os itens vencidos."))` };
+  pa.getCell("A4").font = { bold: true, color: { argb: "FFC00000" } };
   const col = (k) => `${L}!$${letra(k)}$${LIN_1}:$${letra(k)}$${ult}`;
   for (let i = 0; i < nItens; i++) {
     const n = LIN_1 + i;
