@@ -1040,7 +1040,18 @@ function Processos({ ctx }) {
   const cat = catId(filtro) || (contagem.acompanhando ? catId("acompanhando") : contagem.finalizacao ? catId("finalizacao") : contagem.vamos ? catId("vamos") : catId("todos"));
   const escolher = (id) => { setFiltro(id); try { sessionStorage.setItem("lp-cat", id); } catch (e) { /* ignora */ } };
   const lista = daEmpresa.filter((p) => cat.teste(p) && (!q || `${p.orgao} ${p.municipio} ${p.numero} ${p.objeto}`.toLowerCase().includes(q.toLowerCase())));
+  // Antes da sessão (Vamos participar / Proposta enviada): só a data manda, a sessão mais próxima na 1ª linha;
+  // depois os sem data e, por último, os com sessão já passada (a mais recente primeiro).
+  const agoraMs = Date.now();
+  const ms = (p) => new Date(p.data_sessao).getTime();
+  const grupoData = (p) => !p.data_sessao || isNaN(ms(p)) ? 1 : ms(p) >= agoraMs ? 0 : 2;
   const ordenada = [...lista].sort((a, b) => {
+    if (cat.id === "vamos" || cat.id === "proposta") {
+      const ga = grupoData(a), gb = grupoData(b);
+      if (ga !== gb) return ga - gb;
+      if (ga === 1) return 0;
+      return ga === 0 ? ms(a) - ms(b) : ms(b) - ms(a);
+    }
     const na = naoVistas[a.id] ? 1 : 0, nb = naoVistas[b.id] ? 1 : 0;
     if (na !== nb) return nb - na;
     return (a.data_sessao || "9") < (b.data_sessao || "9") ? -1 : 1;
