@@ -91,6 +91,12 @@ export default function CotacaoPainel({ p, itens, pode, notify, onMudou, onPropo
         if (error) falhas.push(`Item ${item.numero}: ${errMsg(error)}`);
       }));
     }
+    // Guarda os markups da planilha no processo: a próxima planilha baixada sai com eles e com as fórmulas
+    if (lido.markup && Object.keys(lido.markup).length) {
+      const opc = p.proposta_opcoes || {};
+      const { error } = await sb.from("processos").update({ proposta_opcoes: { ...opc, markup: { ...(opc.markup || {}), ...lido.markup } } }).eq("id", p.id);
+      if (error) falhas.push(`Markup: ${errMsg(error)}`);
+    }
     setBusy("");
     if (falhas.length) { setErro(`Não gravou ${falhas.length} item(ns). ${falhas.slice(0, 3).join(" · ")}`); onMudou && onMudou(); return; }
     const cot = linhas.filter((l) => l.cotado).length;

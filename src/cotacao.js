@@ -45,7 +45,6 @@ const borda = { top: { style: "thin", color: { argb: "FFBFBFBF" } }, left: { sty
 // Colunas da aba de lançamento (mesma ordem do modelo da empresa)
 export const COLS = [
   { k: "numero", t: "Item", w: 8.5 },
-  { k: "participacao", t: "Participação", w: 24 },
   { k: "descricao", t: "Descrição (resumo do TR)", w: 70 },
   { k: "quantidade", t: "Qtd", w: 9 },
   { k: "unidade", t: "Unid.", w: 10.5 },
@@ -84,6 +83,11 @@ function cabecalho(ws, linha, titulos, cor) {
 
 /** Gera o .xlsx do processo. `itens` = os que a empresa vai disputar (ou todos). Devolve um Blob. */
 export async function gerarPlanilha(p, itens, docs = []) {
+  // Markups do processo (os que vieram na última planilha enviada); sem eles, os do modelo (100% / 25%)
+  const opc = (p && p.proposta_opcoes) || {};
+  const mk = opc.markup || {};
+  const MK = Number.isFinite(Number(mk.padrao)) && mk.padrao !== null ? Number(mk.padrao) : MARKUP;
+  const MK_MIN = Number.isFinite(Number(mk.minimo)) && mk.minimo !== null ? Number(mk.minimo) : MARKUP_MIN;
   const ExcelJS = await carregarExcel();
   const wb = new ExcelJS.Workbook();
   wb.creator = "LicitaPro";
@@ -111,15 +115,15 @@ export async function gerarPlanilha(p, itens, docs = []) {
   ws.getCell("M2").numFmt = MOEDA;
   // Markups do modelo da empresa: valor unitário = custo × (1 + H2); lance mínimo = custo × (1 + H3)
   ws.getCell("G2").value = "Markup padrão:";
-  ws.getCell("H2").value = MARKUP;
+  ws.getCell("H2").value = MK;
   ws.getCell("G3").value = "Markup mínimo:";
-  ws.getCell("H3").value = MARKUP_MIN;
+  ws.getCell("H3").value = MK_MIN;
   ["H2", "H3"].forEach((a) => { ws.getCell(a).numFmt = "0%"; ws.getCell(a).fill = fill(AMARELO); ws.getCell(a).border = borda; });
   ["G2", "G3", "I2", "I3", "L2"].forEach((a) => (ws.getCell(a).font = { bold: true }));
   // linha de exemplo (igual ao modelo)
-  const ex = ["EX.", "Exemplo", "(linha de exemplo – não é item do edital)", 10, "UN", 15, 150, "MarcaX", 12.5, 13.8, "", "", "80000000000", "", "cotação fornecedor Z"];
+  const ex = ["EX.", "(linha de exemplo – não é item do edital)", 10, "UN", 15, 150, "MarcaX", 12.5, 13.8, "", "", "80000000000", "", "cotação fornecedor Z"];
   const rEx = ws.getRow(4);
-  ex.forEach((v, i) => { const c = rEx.getCell(i + 1); c.value = v === "" ? null : v; c.fill = fill(CINZA); c.font = { color: { argb: "FF7F7F7F" } }; if ([5, 6, 8, 9].includes(i)) c.numFmt = MOEDA; });
+  ex.forEach((v, i) => { const c = rEx.getCell(i + 1); c.value = v === "" ? null : v; c.fill = fill(CINZA); c.font = { color: { argb: "FF7F7F7F" } }; if ([4, 5, 7, 8].includes(i)) c.numFmt = MOEDA; });
   cabecalho(ws, LIN_CAB, COLS.map((c) => c.t), AZUL);
 
   itens.forEach((it, i) => {
@@ -133,10 +137,10 @@ export async function gerarPlanilha(p, itens, docs = []) {
     const pelaFormula = (salvo, mk) => salvo == null || (custo != null && Math.abs(salvo - Math.round(custo * (1 + mk) * 100) / 100) < 0.005);
     const fCusto = (h) => ({ formula: `IF(${letra("custo")}${n}="","",ROUND(${letra("custo")}${n}*(1+$H$${h}),2))` });
     const v = {
-      numero: it.numero, participacao: it.participacao || null, descricao: it.descricao || "", quantidade: it.quantidade != null ? Number(it.quantidade) : null,
-      unidade: it.unidade || "", preco_unit: pelaFormula(pu, MARKUP) ? fCusto(2) : pu,
+      numero: it.numero, descricao: it.descricao || "", quantidade: it.quantidade != null ? Number(it.quantidade) : null,
+      unidade: it.unidade || "", preco_unit: pelaFormula(pu, MK) ? fCusto(2) : pu,
       preco_total: { formula: `IF(${letra("preco_unit")}${n}="","",ROUND(${letra("quantidade")}${n}*${letra("preco_unit")}${n},2))` },
-      marca: it.marca || null, custo, valor_minimo: pelaFormula(vm, MARKUP_MIN) ? fCusto(3) : vm,
+      marca: it.marca || null, custo, valor_minimo: pelaFormula(vm, MK_MIN) ? fCusto(3) : vm,
       vencido: null, valor_vencido: null, anvisa: it.anvisa || null, obs_exigencia: it.obs_exigencia || null, obs: it.obs || null,
     };
     COLS.forEach((c, j) => {
@@ -157,6 +161,10 @@ export async function gerarPlanilha(p, itens, docs = []) {
   });
   ws.autoFilter = { from: { row: LIN_CAB, column: 1 }, to: { row: LIN_CAB, column: COLS.length } };
   ws.getColumn(COLS.length + 1).hidden = true;
+  // Formatação condicional do modelo: linha verde quando Vencido = S; valor vencido em vermelho se faltar
+  const lv = letra("vencido"), lvv = letra("valor_vencido");
+  ws.addConditionalFormatting({ ref: `${lv}${LIN_1}:${letra("obs_exigencia")}${ult}`, rules: [{ type: "expression", priority: 5, formulae: [`$${lv}${LIN_1}="S"`], style: { fill: { type: "pattern", pattern: "solid", bgColor: { argb: "FFE2EFDA" } } } }] });
+  ws.addConditionalFormatting({ ref: `${lvv}${LIN_1}:${lvv}${ult}`, rules: [{ type: "expression", priority: 1, formulae: [`AND($${lv}${LIN_1}="S",OR(NOT(ISNUMBER($${lvv}${LIN_1})),$${lvv}${LIN_1}<=0))`], style: { font: { color: { argb: "FF9C0006" } }, fill: { type: "pattern", pattern: "solid", bgColor: { argb: "FFFCE4D6" } } } }] });
 
   // ---------- Aba 2: Proposta Ajustada (só os itens com Vencido = S) ----------
   const pa = wb.addWorksheet("Proposta Ajustada");
@@ -170,7 +178,7 @@ export async function gerarPlanilha(p, itens, docs = []) {
   pa.getCell("J1").font = { bold: true, color: { argb: "FFFFFFFF" } };
   pa.getCell("J1").fill = fill(AZUL2);
   pa.getCell("J2").value = "Incluir registro ANVISA?";
-  pa.getCell("K2").value = "Não";
+  pa.getCell("K2").value = opc.colunas && opc.colunas.anvisa ? "Sim" : "Não";
   pa.getCell("K2").fill = fill(AMARELO);
   pa.getCell("K2").dataValidation = { type: "list", allowBlank: false, formulae: ['"Sim,Não"'], showErrorMessage: true, errorTitle: "Escolha Sim ou Não", error: "Selecione uma opção da lista." };
   pa.getCell("J4").value = "Marque S na coluna “Vencido?” da Planilha de Lançamento e o valor final em “Valor vencido”. Os itens aparecem aqui sozinhos.";
@@ -315,6 +323,17 @@ export async function lerPlanilha(arquivo, itensProc) {
   }
   if (!linCab) throw new Error("Não achei o cabeçalho (Item, Descrição, Qtd, Valor unitário…). Use a planilha gerada pelo LicitaPro.");
 
+  // Markups da planilha (rótulo "Markup padrão:" / "Markup mínimo:" e o valor ao lado)
+  const markup = {};
+  for (let r = 1; r < linCab; r++) {
+    ws.getRow(r).eachCell({ includeEmpty: false }, (cell, c) => {
+      const h = norm(valorCel(cell));
+      const k = h.startsWith("markup padrao") ? "padrao" : h.startsWith("markup minimo") ? "minimo" : null;
+      if (!k) return;
+      const v = numero(valorCel(ws.getRow(r).getCell(c + 1)));
+      if (v != null && v >= 0 && v < 100) markup[k] = Math.round(v * 10000) / 10000;
+    });
+  }
   const porNumero = new Map(itensProc.map((i) => [Number(i.numero), i]));
   const linhas = []; const avisos = []; const vistos = new Set();
   for (let r = linCab + 1; r <= ws.rowCount; r++) {
@@ -351,5 +370,5 @@ export async function lerPlanilha(arquivo, itensProc) {
     linhas.push({ numero: n, item, dados: d, avisos: av, cotado: d.preco_unit != null });
   }
   if (!linhas.length) throw new Error("Nenhum item do processo foi encontrado na planilha.");
-  return { linhas, avisos, aba: ws.name };
+  return { linhas, avisos, aba: ws.name, markup };
 }
