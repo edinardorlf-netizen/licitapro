@@ -39,6 +39,46 @@ export function conflito(a, b) {
   return m;
 }
 
+// Características que distinguem uma descrição (para o nome de cada grupo da separação)
+function marcas(l) {
+  const c = l.c || {}, r = [];
+  (c.teor || []).forEach((t) => r.push(t === "99.5" ? "absoluto" : `teor ${t.replace(".", ",")}`));
+  (c.vols || []).forEach((v) => r.push(v.toLowerCase()));
+  (c.pesos || []).forEach((v) => r.push(v.toLowerCase()));
+  (c.dims || []).forEach((v) => r.push(v.toLowerCase()));
+  if (c.tam) r.push(`tam ${String(c.tam).replace(/^T/, "")}`);
+  if (c.cal) r.push(`nº ${c.cal}`);
+  if (c.qtd) r.push(`c/ ${String(c.qtd).replace(/^Q/, "")}`);
+  if (c.forma) r.push(c.forma.toLowerCase());
+  const BONITO = { COMVAS: "com vaso", SEMVAS: "sem vaso", NAO: "não estéril", SIM: "estéril", ESTERIL: "estéril", ADULT: "adulto", PEDIATRIC: "pediátrico", MASCULIN: "masculino", FEMININ: "feminino", ALGODA: "algodão", PLASTIC: "plástico", BRANC: "branco", PRET: "preto", ESPUM: "espuma", AC: "aço", LONG: "longa", CURT: "curta", TRANSPARENTE: "transparente" };
+  Object.values(c.quals || {}).forEach((v) => r.push(BONITO[v] || String(v).toLowerCase()));
+  if (c.tipo === "remedio") { const d = String(c.base || "").split("|")[2]; if (d && d !== "-") r.push(d.toLowerCase()); }
+  return r;
+}
+
+/** Divide as descrições de um produto misturado em grupos que não se contradizem.
+ *  O 1º grupo (o que tem mais itens ganhos) fica no produto; os outros viram produtos novos. */
+export function partir(P) {
+  const ls = [...P.linhas].sort((a, b) => marcas(b).length - marcas(a).length);
+  const gs = [];
+  ls.forEach((l) => {
+    const ok = gs.filter((g) => g.linhas.every((o) => !conflito(l, o).length));
+    if (!ok.length) { gs.push({ linhas: [l], tokens: new Set(l.c ? l.c.tokens : []) }); return; }
+    const g = ok.map((g) => [g, sobreposicao(new Set(l.c ? l.c.tokens : []), g.tokens)]).sort((a, b) => b[1] - a[1])[0][0];
+    g.linhas.push(l);
+    (l.c ? l.c.tokens : []).forEach((t) => g.tokens.add(t));
+    if (ok.length > 1) l.duvida = true; // serviria em mais de um grupo
+  });
+  gs.forEach((g) => {
+    g.ganhos = g.linhas.filter((l) => l.tipo === "ganho").length;
+    const ms = g.linhas.map(marcas).filter((m) => m.length);
+    g.rotulo = ms.length ? ms[0].filter((x) => ms.every((m) => m.includes(x))).join(" · ") : "";
+    g.nome = String(g.linhas.find((l) => marcas(l).length)?.desc || g.linhas[0].desc || "").slice(0, 80);
+  });
+  gs.sort((a, b) => b.ganhos - a.ganhos || b.linhas.length - a.linhas.length);
+  return gs;
+}
+
 /** Monta os produtos com as características das suas descrições e as ligações entre eles. */
 export function analisar(dados) {
   const anvisaItem = new Map((dados.itens || []).map((i) => [i.id, i.anvisa]));
@@ -235,6 +275,27 @@ export default function LigarProdutos({ dados, podeCat, verCusto, notify, onFeit
     notify("Descrição separada: voltou a ser um produto próprio.");
     onFeito();
   };
+  // Separa os grupos 2, 3… de cada produto misturado em produtos novos (o 1º fica no produto)
+  const separarGrupos = async (lista) => {
+    let feitos = 0, novos = 0;
+    setBusy(`Separando… 0 de ${lista.length}`);
+    try {
+      for (const P of lista) {
+        const gs = partir(P);
+        if (gs.length < 2) continue;
+        for (const g of gs.slice(1)) {
+          const { error } = await sb.rpc("separar_grupo", { p_itens: g.linhas.filter((l) => l.tipo === "item").map((l) => l.id), p_ganhos: g.linhas.filter((l) => l.tipo === "ganho").map((l) => l.id), p_nome: g.nome });
+          if (error) throw error;
+          novos++;
+        }
+        feitos++;
+        if (feitos % 5 === 0) setBusy(`Separando… ${feitos} de ${lista.length}`);
+      }
+      notify(feitos ? `${feitos} produto(s) separado(s) em ${novos} produto(s) novo(s).` : "Nada para separar.");
+      onFeito();
+    } catch (e) { notify(errMsg(e)); onFeito(); }
+    setBusy("");
+  };
   const conferido = async (P) => {
     const { error } = await sb.from("produtos").update({ conferido_em: new Date().toISOString(), conferido_por: email || null }).eq("id", P.id);
     if (error) return notify(errMsg(error));
@@ -319,19 +380,31 @@ export default function LigarProdutos({ dados, podeCat, verCusto, notify, onFeit
       {(aba === "conferir" || aba === "misturados") && (!(aba === "conferir" ? a.aConferir : a.misturados).length ? <div className="hint">{aba === "conferir" ? "Nada juntado esperando conferência." : "Nenhum produto com descrições que se contradizem."}</div> : <>
         <span className="hint">{aba === "conferir"
           ? "Produtos que acabaram de ser juntados, com todas as descrições. Leia cada uma: se alguma não for o mesmo produto, clique em “Separar”. As linhas em amarelo destoam das outras (litragem, gramatura, tamanho, teor, dose ou preço). Quando estiver tudo certo, clique em “Está certo”."
-          : "Produtos que já estavam juntos, mas com descrições que se contradizem (ex.: álcool 70 junto com 92,8; 500 ml junto com 1 L; tamanho P junto com G). Separe as linhas em amarelo que não forem o mesmo produto; se estiver certo assim, clique em “Está certo”."}</span>
-        {(aba === "conferir" ? a.aConferir : a.misturados).slice(0, lim).map((P) => (
+          : "Produtos que já estavam juntos, mas com descrições que se contradizem (ex.: álcool 70 junto com 92,8; 500 ml junto com 1 L; tamanho P junto com G). O app já dividiu as descrições em grupos: o 1º fica no produto e cada um dos outros vira um produto novo. Confira e clique em “Separar em N produtos”; se uma linha estiver no grupo errado, use “Separar” nela; se estiver certo juntos, clique em “Está certo”."}</span>
+        {aba === "misturados" && podeCat && (
+          <div className="row-inline" style={{ justifyContent: "flex-end" }}>
+            <button type="button" className="btn" disabled={!!busy} onClick={() => { if (window.confirm(`Separar os ${a.misturados.length} produtos misturados nos grupos mostrados? Dá para juntar de novo depois.`)) separarGrupos(a.misturados); }}>Separar todos os {a.misturados.length}</button>
+          </div>
+        )}
+        {(aba === "conferir" ? a.aConferir : a.misturados).slice(0, lim).map((P) => {
+          const gs = aba === "misturados" ? partir(P) : null;
+          return (
           <div key={P.id} className="card" style={{ padding: 0 }}>
             <div className="row-inline" style={{ padding: "10px 12px", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
               <div><b>{P.p.nome}</b>{P.mistura && P.mistura.length > 0 && <span className="tag warn" style={{ marginLeft: 6 }}>{P.mistura.slice(0, 3).join(" · ")}</span>}<span className="hint"> · {P.linhas.length} descrições · venda mediana {P.med != null ? brl(P.med) : "—"}{verCusto && P.p.custo_atual != null ? ` · custo ${brl(P.p.custo_atual)}` : ""}</span></div>
-              {podeCat && <button type="button" className="btn sm" onClick={() => conferido(P)}>✓ Está certo</button>}
+              {podeCat && <div className="row-inline" style={{ gap: 6 }}>
+                {gs && gs.length > 1 && <button type="button" className="btn sm" disabled={!!busy} onClick={() => separarGrupos([P])}>Separar em {gs.length} produtos</button>}
+                <button type="button" className="btn ghost sm" onClick={() => conferido(P)}>✓ Está certo</button>
+              </div>}
             </div>
             <div style={{ overflowX: "auto" }}>
               <table className="itab">
                 <thead><tr><th>Descrição no edital</th><th>Onde</th><th>Unid.</th><th className="n">Preço</th><th>Marca</th>{podeCat && <th />}</tr></thead>
                 <tbody>
-                  {P.linhas.map((l) => {
-                    const m = destoa(l, P);
+                  {(gs || [{ linhas: P.linhas }]).flatMap((g, gi) => [
+                    gs ? <tr key={`g${gi}`}><td colSpan={podeCat ? 6 : 5} style={{ background: "var(--soft, #f3f4f6)" }}><b>{gi === 0 ? "Fica no produto" : `Produto novo ${gi}`}</b><span className="hint"> · {g.linhas.length} descrição(ões){g.ganhos ? ` · ${g.ganhos} 🏆` : ""}{g.rotulo ? ` · ${g.rotulo}` : ""}</span></td></tr> : null,
+                    ...g.linhas.map((l) => {
+                    const m = gs ? (l.duvida ? ["sem litragem/tamanho/teor na descrição: confira em qual grupo fica"] : []) : destoa(l, P);
                     return (
                       <tr key={l.id} style={m.length ? { background: "var(--amber-soft)" } : null}>
                         <td style={{ minWidth: 280 }}>{l.desc}{m.length > 0 && <div className="hint" style={{ color: "var(--red)" }}>⚠ {m.join(" · ")}</div>}</td>
@@ -342,12 +415,13 @@ export default function LigarProdutos({ dados, podeCat, verCusto, notify, onFeit
                         {podeCat && <td><button type="button" className="linkbtn" style={{ fontSize: 12 }} onClick={() => separar(l)}>Separar</button></td>}
                       </tr>
                     );
-                  })}
+                  })])}
                 </tbody>
               </table>
             </div>
           </div>
-        ))}
+          );
+        })}
       </>)}
       {aba && (aba === "certeza" ? a.certos : aba === "provavel" ? a.provaveis : aba === "conferir" ? a.aConferir : aba === "misturados" ? a.misturados : a.sozinhos).length > lim && (
         <button type="button" className="btn ghost sm" style={{ alignSelf: "flex-start" }} onClick={() => setLim((l) => l + 50)}>Mostrar mais</button>

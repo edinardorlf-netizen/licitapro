@@ -1446,3 +1446,18 @@ end $$;
 -- =====================================================================
 alter table public.produtos add column if not exists juntado_em timestamptz, add column if not exists conferido_em timestamptz, add column if not exists conferido_por text;
 -- (corpo completo de juntar_produtos e unificar_produto: iguais aos acima + "update produtos set juntado_em = now(), conferido_em = null, conferido_por = null where id = <produto final>")
+-- Migração separar_grupo_produto (15/11/2026): separa um grupo de descrições (itens/itens ganhos) de um produto misturado em um produto novo.
+create or replace function public.separar_grupo(p_itens uuid[], p_ganhos uuid[], p_nome text)
+returns uuid language plpgsql security definer set search_path = public as $$
+declare pid uuid; c uuid := public.minha_conta();
+begin
+  if not (public.pode_editar() and public.tem_perm('catalogo')) then raise exception 'Sem permissão para o catálogo'; end if;
+  p_itens := coalesce(p_itens, '{}'); p_ganhos := coalesce(p_ganhos, '{}');
+  if cardinality(p_itens) + cardinality(p_ganhos) = 0 then raise exception 'Nenhum item escolhido'; end if;
+  insert into produtos (conta_id, nome) values (c, left(coalesce(nullif(trim(p_nome), ''), 'Produto'), 200)) returning id into pid;
+  update itens set produto_id = pid where conta_id = c and id = any(p_itens);
+  update itens_ganhos set produto_id = pid where conta_id = c and id = any(p_ganhos);
+  return pid;
+end $$;
+revoke execute on function public.separar_grupo(uuid[], uuid[], text) from public, anon;
+grant execute on function public.separar_grupo(uuid[], uuid[], text) to authenticated;

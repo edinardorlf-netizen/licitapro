@@ -68,6 +68,7 @@ const paraMg = (v, u) => (u === "MCG" ? v / 1000 : u === "G" || u === "GR" ? v *
 /** Texto normalizado e só a parte que descreve o item (sem a repetição do Compras.gov). */
 function texto(desc) {
   let t = String(desc || "").replace(/([a-z]{3})(\d)/g, "$1 $2").replace(/([a-z]{2})([A-Z][a-z]{2})/g, "$1 $2");
+  t = t.replace(/(\d)\s*[`´']\s*(\d)/g, "$1,$2"); // 92`8 → 92,8
   t = semAcento(t).toUpperCase().replace(/[\t\r\n]+/g, " ").replace(/\s*\(?\s*POR\s*CENTO\s*\)?/g, "%").replace(/\s+/g, " ").trim();
   t = t.replace(/^\s*([A-Z?]{3,})\s*[-–:]\s*(?=\1\b)/, "");
   const corte = t.slice(20).search(/\.\s|:\s|:$/);
@@ -166,6 +167,8 @@ function dimensoes(t) {
   const al = t.match(/\bALCOOL\s+(?:ETILICO\s+)?(?:HIDRATADO\s+)?(?:LIQUIDO\s+)?(?:COMUM\s+)?(\d{2}(?:[.,]\d)?)\b/);
   if (al) teor.add(fmt(numero(al[1])));
   if (/\bALCOOL\b/.test(t) && /\bABSOLUTO\b/.test(t)) teor.add("99.5"); // álcool absoluto ≠ 70 ≠ 92,8
+  // Mesmo álcool escrito em INPM ou em GL: 92,8 INPM = 96 GL; 70 INPM ≈ 77 GL
+  [["92.8", "96"], ["70", "77"], ["99.5", "99.3"]].forEach(([a, b]) => { if (teor.has(a) || teor.has(b)) { teor.add(a); teor.add(b); } });
   return { dims: [...d].slice(0, 2), teor: [...teor] };
 }
 /** Litragem e gramatura em qualquer ponto do texto (1 L = 1000 ml; 1 kg = 1000 g; 60 g/m² = gramatura). */
