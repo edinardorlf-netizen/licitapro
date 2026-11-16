@@ -737,7 +737,7 @@ function Radar({ ctx }) {
   const carregar = useCallback(async () => {
     let query = sb.from("editais").select("*", { count: "exact" });
     if (modo === "relevantes") query = query.eq("relevante", true).eq("status", "novo").gte("encerramento_propostas", new Date().toISOString());
-    else if (modo === "abertos") query = query.neq("status", "descartado").gte("encerramento_propostas", new Date().toISOString());
+    else if (modo === "abertos") query = query.not("status", "in", "(descartado,acompanhando)").gte("encerramento_propostas", new Date().toISOString());
     else if (modo === "descartados") query = query.eq("status", "descartado");
     if (port !== "todos") query = port === "outros" ? query.not("portal", "in", "(pcp,licitar,comprasgov,bll,licitacoes-e)") : query.eq("portal", port);
     if (uf !== "todos") query = query.eq("uf", uf);
@@ -761,6 +761,8 @@ function Radar({ ctx }) {
     try {
       const r = await chamarRobo({ acao: "cadastrar", entrada: e.controle_pncp });
       notify(r.existente ? "Esse processo já estava cadastrado" : ctx.empresas.filter((x) => x.ativa).length > 1 ? "Processo cadastrado. Escolha a empresa que vai participar." : "Processo cadastrado. O robô já está acompanhando.");
+      setLista((l) => (l || []).filter((x) => x.id !== e.id));
+      setTotal((t) => Math.max(0, t - 1));
       ctx.carregar();
       abrir(r.id);
     } catch (err) { notify(errMsg(err)); }
@@ -774,8 +776,11 @@ function Radar({ ctx }) {
       const patch = { favorito: true };
       if (pr && pr.etapa === "analise") patch.etapa = "participar";
       await sb.from("processos").update(patch).eq("id", r.id);
-      atualizar({ id: e.id, status: "acompanhando" });
-      notify("⭐ Marcado como “Vamos participar”. Ele aparece em Processos e na Agenda.");
+      // Sai da Busca de Editais e passa a ser acompanhado (Acompanhamento → ⭐ Vamos participar)
+      setLista((l) => (l || []).filter((x) => x.id !== e.id));
+      setTotal((t) => Math.max(0, t - 1));
+      setAberto((a) => (a && a.id === e.id ? null : a));
+      notify("⭐ Vamos participar: saiu da Busca e foi para Acompanhamento (e para a Agenda).");
       ctx.carregar();
     } catch (err) { notify(errMsg(err)); }
     setOcupado("");
