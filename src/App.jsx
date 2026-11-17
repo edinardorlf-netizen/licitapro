@@ -28,6 +28,7 @@ import Demandas from "./Demandas.jsx";
 import LeituraEdital from "./LeituraEdital.jsx";
 import { Entrar, VincularAparelho, TrocarSenha, CampoSenha, LinkConta, prenderAparelho, aparelhoLido, ehInterno } from "./Acesso.jsx";
 import PainelAuraxis from "./PainelAuraxis.jsx";
+import Orcamentos from "./Orcamentos.jsx";
 import {
   sb, appUrl, portal, PORTAIS, ETAPAS, etapa, ATIVAS, A_LANCAR, ACOMPANHANDO, CATEGORIAS, RESULTADOS, resultado, ganhou, PAPEIS, PERMISSOES, temPerm, podeAlterar, algumaAlteracao, fmtData, fmtDataCurta, fmtHora, fmtDH, diaChave, hojeChave,
   diaLongo, falta, brl, num, parseNum, fmtIn, errMsg, chamarRobo, iniciais,
@@ -302,6 +303,7 @@ const Icon = ({ name, size = 20 }) => {
     bot: <><rect x="4" y="8" width="16" height="11" rx="3" /><path d="M12 4v4M9 13h.01M15 13h.01M9.5 16.5h5" /></>,
     pen: <><path d="M4 20h4L19 9l-4-4L4 16v4Z" /><path d="m14 6 4 4" /></>,
     box: <><path d="M21 8 12 3 3 8v8l9 5 9-5V8Z" /><path d="m3 8 9 5 9-5M12 13v8" /></>,
+    cart: <><path d="M3 4h2l2.4 11h10.2L20 8H6.2" /><circle cx="9" cy="19" r="1.5" /><circle cx="17" cy="19" r="1.5" /></>,
     truck: <><path d="M3 6h11v10H3zM14 10h4l3 3v3h-7" /><circle cx="7" cy="17.5" r="1.5" /><circle cx="17" cy="17.5" r="1.5" /></>,
     users: <><circle cx="9" cy="8" r="3.2" /><path d="M3 19c.8-3.2 3.2-5 6-5s5.2 1.8 6 5" /><circle cx="17" cy="9" r="2.5" /><path d="M16 14.2c2.4.2 4.2 1.8 5 4.8" /></>,
     scale: <><path d="M12 3v18M7 21h10M5 7h14" /><path d="m5 7-3 6a3 3 0 0 0 6 0L5 7ZM19 7l-3 6a3 3 0 0 0 6 0l-3-6Z" /></>,
@@ -333,10 +335,11 @@ const TABS = [
   { id: "reequilibrio", nome: "Reequilíbrio", icon: "scale", pc: true },
   { id: "agenda", nome: "Agenda", icon: "cal" },
   { id: "catalogo", nome: "Produtos", icon: "box", pc: true },
+  { id: "orcamentos", nome: "Orçamentos", icon: "cart" },
   { id: "ajustes", nome: "Ajustes", icon: "cog" },
 ];
 // Permissão que libera cada aba (Ajustes sempre aparece: conta e alertas)
-const PERM_ABA = { inicio: "processos", radar: "radar", processos: "processos", proposta: "proposta", contratos: "contratos", demandas: "demandas", catalogo: "catalogo", reequilibrio: "reequilibrio", agenda: "agenda", robo: "robo" };
+const PERM_ABA = { inicio: "processos", radar: "radar", processos: "processos", proposta: "proposta", contratos: "contratos", demandas: "demandas", catalogo: "catalogo", reequilibrio: "reequilibrio", agenda: "agenda", robo: "robo", orcamentos: "orcamentos" };
 
 /* ============================================================
    Sessão
@@ -582,6 +585,7 @@ function Painel({ session, papel, acesso, abrirAuraxis, notify }) {
   else if (tab === "demandas") tela = <Demandas ctx={ctxDe("demandas")} />;
   else if (tab === "agenda") tela = <Agenda ctx={ctx} />;
   else if (tab === "robo") tela = <RoboTela ctx={ctxDe("robo")} />;
+  else if (tab === "orcamentos") tela = <Orcamentos ctx={ctxDe("orcamentos")} />;
   else tela = <Ajustes ctx={ctx} />;
 
   return (

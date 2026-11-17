@@ -1600,3 +1600,402 @@ begin
   if position('pode_alterar(''radar'')' in d) = 0 then raise exception 'salvar_categorias sem o trecho esperado'; end if;
   execute d;
 end $$;
+
+-- =====================================================================
+-- Migração orcamentos_estoque (17/11/2026) · Orçamentos de venda (clientes particulares)
+-- e saldo de estoque vindo do PDV.
+-- - produtos ganha código do sistema (PDV), código planilha (P0000, fixo), marca, categoria e saldo.
+--   origem: 'licitacao' (agrupamento das licitações, como antes), 'planilha' (Sistema_Orcamentos.xlsm), 'pdv' (importação).
+-- - Custo continua só em produto_custos (histórico); produto_custo_atual mantém produtos.custo_atual.
+-- - Números (P0000 e nº do orçamento) saem de uma sequência por conta, travada no banco.
+-- - Área de permissão nova: orcamentos (Ver) e orcamentos_alterar (Altera).
+-- =====================================================================
+
+-- 1) Sequências por conta
+create table if not exists public.sequencias (
+  conta_id uuid not null references public.contas(id) on delete cascade,
+  nome text not null,
+  ultimo bigint not null default 0,
+  primary key (conta_id, nome)
+);
+alter table public.sequencias enable row level security; -- sem regras: só as funções do banco mexem
+
+create or replace function public.proximo_numero(c uuid, n text)
+returns bigint language sql volatile security definer set search_path = public as $$
+  insert into sequencias (conta_id, nome, ultimo) values (c, n, 1)
+  on conflict (conta_id, nome) do update set ultimo = sequencias.ultimo + 1
+  returning ultimo;
+$$;
+revoke execute on function public.proximo_numero(uuid, text) from public, anon, authenticated;
+
+-- 2) Produtos: campos do PDV / planilha
+alter table public.produtos
+  add column if not exists codigo text,
+  add column if not exists codigo_planilha text,
+  add column if not exists marca text,
+  add column if not exists categoria text,
+  add column if not exists saldo numeric(16,3),
+  add column if not exists saldo_em timestamptz,
+  add column if not exists origem text not null default 'licitacao',
+  add column if not exists importacao_id uuid,
+  add column if not exists importado_em timestamptz;
+alter table public.produtos drop constraint if exists produtos_origem_check;
+alter table public.produtos add constraint produtos_origem_check check (origem in ('licitacao','planilha','pdv'));
+create unique index if not exists produtos_conta_codigo_idx on public.produtos (conta_id, codigo) where codigo is not null;
+create unique index if not exists produtos_conta_cp_idx on public.produtos (conta_id, codigo_planilha) where codigo_planilha is not null;
+create index if not exists produtos_origem_idx on public.produtos (conta_id, origem);
+
+-- Código planilha automático: item sem código do sistema, ou criado pela importação do PDV
+create or replace function public.produtos_codigo_planilha()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare n bigint;
+begin
+  if new.codigo is not null then new.codigo := nullif(trim(new.codigo), ''); end if;
+  if new.codigo_planilha is not null then new.codigo_planilha := upper(nullif(trim(new.codigo_planilha), '')); end if;
+  if new.conta_id is null then new.conta_id := public.minha_conta(); end if;
+  if new.codigo_planilha ~ '^P\d{1,9}$' then
+    -- código planilha que já veio pronto (planilha antiga): a sequência passa a contar depois dele
+    n := substr(new.codigo_planilha, 2)::bigint;
+    insert into sequencias (conta_id, nome, ultimo) values (new.conta_id, 'codigo_planilha', n)
+    on conflict (conta_id, nome) do update set ultimo = greatest(sequencias.ultimo, excluded.ultimo);
+  elsif new.origem in ('planilha','pdv') and new.codigo_planilha is null and (new.codigo is null or new.origem = 'pdv') then
+    new.codigo_planilha := 'P' || lpad(public.proximo_numero(new.conta_id, 'codigo_planilha')::text, 4, '0');
+  end if;
+  return new;
+end $$;
+drop trigger if exists b_codigo_planilha on public.produtos;
+create trigger b_codigo_planilha before insert on public.produtos for each row execute function public.produtos_codigo_planilha();
+
+-- 3) Configuração dos orçamentos (markup, vendedores, condições, cabeçalho da Via do Cliente)
+create table if not exists public.orcamentos_config (
+  conta_id uuid primary key default public.minha_conta() references public.contas(id) on delete cascade,
+  dados jsonb not null default '{}'::jsonb,
+  alterado_em timestamptz not null default now(),
+  alterado_por text
+);
+
+-- 4) Clientes
+create table if not exists public.clientes (
+  id uuid primary key default gen_random_uuid(),
+  conta_id uuid not null default public.minha_conta() references public.contas(id) on delete cascade,
+  codigo integer,
+  nome text not null check (char_length(trim(nome)) between 1 and 200),
+  cnpj_cpf text, endereco text, telefone text, email text, obs text,
+  criado_em timestamptz not null default now()
+);
+create unique index if not exists clientes_conta_codigo_idx on public.clientes (conta_id, codigo);
+create or replace function public.clientes_codigo()
+returns trigger language plpgsql security definer set search_path = public as $$
+begin
+  if new.conta_id is null then new.conta_id := public.minha_conta(); end if;
+  if new.codigo is null then new.codigo := public.proximo_numero(new.conta_id, 'cliente'); end if;
+  return new;
+end $$;
+drop trigger if exists b_codigo on public.clientes;
+create trigger b_codigo before insert on public.clientes for each row execute function public.clientes_codigo();
+
+-- 5) Orçamentos e itens (itens guardam os valores do momento)
+create table if not exists public.orcamentos (
+  id uuid primary key default gen_random_uuid(),
+  conta_id uuid not null default public.minha_conta() references public.contas(id) on delete cascade,
+  numero integer not null,
+  data date not null default (now() at time zone 'America/Sao_Paulo')::date,
+  cliente_id uuid references public.clientes(id) on delete set null,
+  cliente_nome text not null,
+  cliente_doc text,
+  vendedor text not null,
+  condicao text,
+  validade_dias integer not null default 7 check (validade_dias between 0 and 365),
+  status text not null default 'Em Aberto' check (status in ('Em Aberto','Aprovado','Recusado')),
+  data_resposta date,
+  obs text,
+  total numeric(14,2) not null default 0,
+  markup numeric(8,4),
+  criado_por text, criado_em timestamptz not null default now(),
+  alterado_por text, alterado_em timestamptz,
+  unique (conta_id, numero)
+);
+create index if not exists orcamentos_conta_data_idx on public.orcamentos (conta_id, numero desc);
+
+create table if not exists public.orcamento_itens (
+  id uuid primary key default gen_random_uuid(),
+  conta_id uuid not null default public.minha_conta() references public.contas(id) on delete cascade,
+  orcamento_id uuid not null references public.orcamentos(id) on delete cascade,
+  ordem integer not null,
+  produto_id uuid references public.produtos(id) on delete set null,
+  codigo text, descricao text not null, unidade text, marca text,
+  qtd numeric(14,3) not null check (qtd > 0),
+  custo numeric(16,4),
+  valor_unit numeric(14,2) not null,
+  preco_manual boolean not null default false,
+  total numeric(14,2) not null
+);
+create index if not exists orcamento_itens_orc_idx on public.orcamento_itens (orcamento_id, ordem);
+create index if not exists orcamento_itens_prod_idx on public.orcamento_itens (produto_id);
+
+-- 6) Histórico das importações de estoque (com o que estava antes, para desfazer)
+create table if not exists public.estoque_importacoes (
+  id uuid primary key default gen_random_uuid(),
+  conta_id uuid not null default public.minha_conta() references public.contas(id) on delete cascade,
+  em timestamptz not null default now(),
+  por text,
+  arquivo text,
+  tipo text,
+  lidas integer not null default 0,
+  alteradas integer not null default 0,
+  criadas integer not null default 0,
+  ignoradas integer not null default 0,
+  zeradas integer not null default 0,
+  resumo jsonb not null default '{}'::jsonb,
+  anteriores jsonb not null default '[]'::jsonb,
+  custos_ids uuid[] not null default '{}',
+  desfeita_em timestamptz, desfeita_por text
+);
+create index if not exists estoque_imp_conta_idx on public.estoque_importacoes (conta_id, em desc);
+
+-- 7) Isolamento por conta + regras por área
+do $$
+declare t text;
+begin
+  foreach t in array array['orcamentos_config','clientes','orcamentos','orcamento_itens','estoque_importacoes'] loop
+    execute format('alter table public.%I enable row level security', t);
+    execute format('drop policy if exists "so a minha conta" on public.%I', t);
+    execute format('create policy "so a minha conta" on public.%I as restrictive for all to authenticated using (conta_id = (select public.minha_conta())) with check (conta_id = (select public.minha_conta()))', t);
+    execute format('drop policy if exists "ver" on public.%I', t);
+    execute format('create policy "ver" on public.%I for select to authenticated using ((select public.is_equipe()) and (select public.tem_perm(''orcamentos'')))', t);
+  end loop;
+end $$;
+drop trigger if exists a_conta on public.orcamento_itens;
+create trigger a_conta before insert or update of orcamento_id on public.orcamento_itens for each row execute function public.conta_do_pai('orcamentos', 'orcamento_id');
+
+drop policy if exists "alterar config" on public.orcamentos_config;
+create policy "alterar config" on public.orcamentos_config for all to authenticated using ((select public.pode_alterar('orcamentos'))) with check ((select public.pode_alterar('orcamentos')));
+drop policy if exists "alterar clientes" on public.clientes;
+create policy "alterar clientes" on public.clientes for all to authenticated using ((select public.pode_alterar('orcamentos'))) with check ((select public.pode_alterar('orcamentos')));
+-- orçamento: status, resposta e observação mudam direto; criar/alterar itens só pela função salvar_orcamento
+drop policy if exists "status orcamento" on public.orcamentos;
+create policy "status orcamento" on public.orcamentos for update to authenticated using ((select public.pode_alterar('orcamentos'))) with check ((select public.pode_alterar('orcamentos')));
+drop policy if exists "apagar orcamento" on public.orcamentos;
+create policy "apagar orcamento" on public.orcamentos for delete to authenticated using ((select public.is_admin()));
+
+-- produtos e custos: quem vê orçamentos vê o produto (código, marca, saldo, custo)
+drop policy if exists "ver produtos" on public.produtos;
+create policy "ver produtos" on public.produtos for select to authenticated
+  using ((select public.is_equipe()) and ((select public.tem_perm('catalogo')) or (select public.tem_perm('reequilibrio')) or (select public.tem_perm('custos')) or (select public.tem_perm('orcamentos'))));
+drop policy if exists "editar produtos" on public.produtos;
+create policy "editar produtos" on public.produtos for all
+  using ((select public.pode_alterar('catalogo')) or (select public.pode_alterar('custos')) or (select public.pode_alterar('orcamentos')))
+  with check ((select public.pode_alterar('catalogo')) or (select public.pode_alterar('custos')) or (select public.pode_alterar('orcamentos')));
+drop policy if exists "ver custos" on public.produto_custos;
+create policy "ver custos" on public.produto_custos for select to authenticated using ((select public.is_equipe()) and ((select public.tem_perm('custos')) or (select public.tem_perm('orcamentos'))));
+
+-- 8) Achar produto pelo código digitado: código do sistema → código planilha → apelido de produto juntado ("PDV:x"/"P:x" em chaves) → "P" + número
+create or replace function public.produto_por_codigo(c uuid, cod text)
+returns public.produtos language sql stable security definer set search_path = public as $$
+  select p from (
+    select p, 1 o from produtos p where p.conta_id = c and p.codigo = trim(cod)
+    union all select p, 2 from produtos p where p.conta_id = c and p.codigo_planilha = upper(trim(cod))
+    union all select p, 3 from produtos p where p.conta_id = c and p.chaves @> array['PDV:' || trim(cod)]
+    union all select p, 4 from produtos p where p.conta_id = c and p.chaves @> array['P:' || upper(trim(cod))]
+    union all select p, 5 from produtos p where p.conta_id = c and trim(cod) ~ '^\d+$'
+      and p.codigo_planilha in ('P' || trim(cod), 'P' || lpad(trim(cod), 4, '0'))
+  ) x order by o limit 1;
+$$;
+revoke execute on function public.produto_por_codigo(uuid, text) from public, anon, authenticated;
+
+-- 9) Salvar (novo ou alterar) orçamento: tudo ou nada, com as validações da planilha
+create or replace function public.salvar_orcamento(p jsonb)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  c uuid := public.minha_conta();
+  quem text := lower(coalesce(auth.jwt()->>'email', ''));
+  cfg jsonb; mk numeric; cli clientes; vend text; oid uuid; num integer;
+  it jsonb; i integer := 0; cod text; q numeric; man numeric; pr produtos; unit numeric; tot numeric; soma numeric := 0;
+  linhas jsonb := '[]'::jsonb;
+begin
+  if c is null or not public.pode_alterar('orcamentos') then raise exception 'Seu perfil não pode salvar orçamentos.'; end if;
+  select dados into cfg from orcamentos_config where conta_id = c;
+  mk := coalesce((cfg->>'markup')::numeric, 0.54);
+  select * into cli from clientes where id = nullif(p->>'cliente_id', '')::uuid and conta_id = c;
+  if cli.id is null then raise exception 'Selecione o cliente antes de salvar.'; end if;
+  vend := nullif(trim(coalesce(p->>'vendedor', '')), '');
+  if vend is null then raise exception 'Selecione o vendedor antes de salvar.'; end if;
+
+  for it in select * from jsonb_array_elements(coalesce(p->'itens', '[]'::jsonb)) loop
+    cod := nullif(trim(coalesce(it->>'codigo', '')), '');
+    if cod is null and nullif(trim(coalesce(it->>'qtd', '')), '') is null then continue; end if;
+    if cod is null then raise exception 'Há uma quantidade sem código de produto.'; end if;
+    pr := public.produto_por_codigo(c, cod);
+    if pr.id is null then raise exception 'Código % não encontrado nos produtos.', cod; end if;
+    begin q := (it->>'qtd')::numeric; exception when others then q := null; end;
+    if q is null then raise exception 'Informe a quantidade do item: %', pr.nome; end if;
+    if q <= 0 then raise exception 'Quantidade inválida no item: %', pr.nome; end if;
+    if pr.custo_atual is null or pr.custo_atual <= 0 then raise exception 'O item abaixo está sem preço de custo cadastrado: % (código %)', pr.nome, cod; end if;
+    begin man := nullif(trim(coalesce(it->>'preco_manual', '')), '')::numeric; exception when others then raise exception 'Preço manual inválido no item: %', pr.nome; end;
+    if man is not null and man <= 0 then raise exception 'Preço manual inválido no item: %', pr.nome; end if;
+    unit := coalesce(round(man, 2), round(pr.custo_atual * (1 + mk), 2));
+    tot := round(q * unit, 2);
+    i := i + 1; soma := soma + tot;
+    linhas := linhas || jsonb_build_object('ordem', i, 'produto_id', pr.id, 'codigo', cod, 'descricao', pr.nome, 'unidade', pr.unidade,
+      'marca', coalesce(pr.marca, pr.custo_marca), 'qtd', q, 'custo', pr.custo_atual, 'valor_unit', unit, 'preco_manual', man is not null, 'total', tot);
+  end loop;
+  if i = 0 then raise exception 'Inclua ao menos um item com quantidade.'; end if;
+
+  if nullif(p->>'id', '') is null then
+    num := public.proximo_numero(c, 'orcamento');
+    if exists (select 1 from orcamentos where conta_id = c and numero = num) then raise exception 'O orçamento Nº % já existe no histórico.', lpad(num::text, 4, '0'); end if;
+    insert into orcamentos (conta_id, numero, cliente_id, cliente_nome, cliente_doc, vendedor, condicao, validade_dias, obs, total, markup, criado_por)
+    values (c, num, cli.id, cli.nome, cli.cnpj_cpf, vend, nullif(p->>'condicao', ''), coalesce(nullif(p->>'validade_dias', '')::integer, 7), nullif(p->>'obs', ''), soma, mk, quem)
+    returning id into oid;
+  else
+    select id, numero into oid, num from orcamentos where id = (p->>'id')::uuid and conta_id = c for update;
+    if oid is null then raise exception 'Orçamento não encontrado.'; end if;
+    update orcamentos set cliente_id = cli.id, cliente_nome = cli.nome, cliente_doc = cli.cnpj_cpf, vendedor = vend,
+      condicao = nullif(p->>'condicao', ''), validade_dias = coalesce(nullif(p->>'validade_dias', '')::integer, validade_dias),
+      obs = case when p ? 'obs' then nullif(p->>'obs', '') else obs end, total = soma, markup = mk, alterado_por = quem, alterado_em = now()
+    where id = oid;
+    delete from orcamento_itens where orcamento_id = oid;
+  end if;
+  insert into orcamento_itens (conta_id, orcamento_id, ordem, produto_id, codigo, descricao, unidade, marca, qtd, custo, valor_unit, preco_manual, total)
+  select c, oid, (x->>'ordem')::int, (x->>'produto_id')::uuid, x->>'codigo', x->>'descricao', x->>'unidade', x->>'marca', (x->>'qtd')::numeric,
+         (x->>'custo')::numeric, (x->>'valor_unit')::numeric, (x->>'preco_manual')::boolean, (x->>'total')::numeric
+  from jsonb_array_elements(linhas) x;
+  return jsonb_build_object('id', oid, 'numero', num, 'total', soma, 'itens', i);
+end $$;
+revoke execute on function public.salvar_orcamento(jsonb) from public, anon;
+grant execute on function public.salvar_orcamento(jsonb) to authenticated;
+
+-- 10) Importar estoque: o app lê o arquivo e casa os produtos; aqui grava tudo de uma vez (ou nada)
+-- p = { arquivo, tipo, lidas, ignoradas, resumo,
+--       atualizar: [{id, saldo?, custo?, marca?, unidade?, categoria?, nome?, codigo?}],
+--       criar: [{codigo?, codigo_planilha?, origem?, nome, unidade?, marca?, categoria?, saldo?, custo?}], zerar: [id], fonte? }
+create or replace function public.importar_estoque(p jsonb)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  c uuid := public.minha_conta();
+  quem text := lower(coalesce(auth.jwt()->>'email', ''));
+  imp uuid; x jsonb; pr produtos; ant jsonb[] := '{}'; cus uuid[] := '{}'; cid uuid;
+  alt integer := 0; zer integer := 0; novos jsonb[] := '{}'; nid uuid; ncp text; v numeric; agora timestamptz := now();
+begin
+  if c is null or not public.pode_alterar('orcamentos') then raise exception 'Seu perfil não pode importar estoque.'; end if;
+  insert into estoque_importacoes (conta_id, por, arquivo, tipo, lidas, ignoradas, resumo)
+  values (c, quem, left(p->>'arquivo', 200), p->>'tipo', coalesce((p->>'lidas')::int, 0), coalesce((p->>'ignoradas')::int, 0), coalesce(p->'resumo', '{}'::jsonb))
+  returning id into imp;
+
+  for x in select * from jsonb_array_elements(coalesce(p->'atualizar', '[]'::jsonb)) loop
+    select * into pr from produtos where id = (x->>'id')::uuid and conta_id = c for update;
+    if pr.id is null then raise exception 'Produto da importação não encontrado (já foi apagado?). Envie o arquivo de novo.'; end if;
+    ant := array_append(ant, jsonb_build_object('id', pr.id, 'saldo', pr.saldo, 'saldo_em', pr.saldo_em, 'marca', pr.marca, 'unidade', pr.unidade,
+                                     'categoria', pr.categoria, 'nome', pr.nome, 'codigo', pr.codigo));
+    if x ? 'saldo' and pr.saldo is distinct from (x->>'saldo')::numeric then alt := alt + 1; end if;
+    update produtos set
+      saldo = case when x ? 'saldo' then (x->>'saldo')::numeric else saldo end,
+      saldo_em = case when x ? 'saldo' then agora else saldo_em end,
+      marca = coalesce(nullif(x->>'marca', ''), marca),
+      unidade = coalesce(nullif(x->>'unidade', ''), unidade),
+      categoria = coalesce(nullif(x->>'categoria', ''), categoria),
+      nome = coalesce(nullif(x->>'nome', ''), nome),
+      codigo = coalesce(codigo, nullif(x->>'codigo', ''))
+    where id = pr.id;
+    v := nullif(x->>'custo', '')::numeric;
+    if v is not null and v > 0 and (pr.custo_atual is null or abs(pr.custo_atual - v) >= 0.005) then
+      insert into produto_custos (conta_id, produto_id, valor, marca, fornecedor, anotado_por)
+      values (c, pr.id, v, coalesce(nullif(x->>'marca', ''), pr.marca), coalesce(p->>'fonte', 'PDV'), quem) returning id into cid;
+      cus := cus || cid;
+    end if;
+  end loop;
+
+  for x in select * from jsonb_array_elements(coalesce(p->'zerar', '[]'::jsonb)) loop
+    select * into pr from produtos where id = (x#>>'{}')::uuid and conta_id = c for update;
+    if pr.id is null then continue; end if;
+    ant := array_append(ant, jsonb_build_object('id', pr.id, 'saldo', pr.saldo, 'saldo_em', pr.saldo_em, 'marca', pr.marca, 'unidade', pr.unidade,
+                                     'categoria', pr.categoria, 'nome', pr.nome, 'codigo', pr.codigo));
+    update produtos set saldo = 0, saldo_em = agora where id = pr.id;
+    zer := zer + 1;
+  end loop;
+
+  for x in select * from jsonb_array_elements(coalesce(p->'criar', '[]'::jsonb)) loop
+    insert into produtos (conta_id, nome, unidade, marca, categoria, codigo, codigo_planilha, saldo, saldo_em, origem, importacao_id, importado_em)
+    values (c, left(trim(x->>'nome'), 200), nullif(x->>'unidade', ''), nullif(x->>'marca', ''), nullif(x->>'categoria', ''), nullif(x->>'codigo', ''),
+            nullif(x->>'codigo_planilha', ''), (x->>'saldo')::numeric, case when x ? 'saldo' then agora end,
+            case when x->>'origem' = 'planilha' then 'planilha' else 'pdv' end, imp, agora)
+    returning id, codigo_planilha into nid, ncp;
+    v := nullif(x->>'custo', '')::numeric;
+    if v is not null and v > 0 then
+      insert into produto_custos (conta_id, produto_id, valor, marca, fornecedor, anotado_por)
+      values (c, nid, v, nullif(x->>'marca', ''), coalesce(p->>'fonte', 'PDV'), quem) returning id into cid;
+      cus := cus || cid;
+    end if;
+    novos := array_append(novos, jsonb_build_object('id', nid, 'codigo_planilha', ncp, 'codigo', nullif(x->>'codigo', ''), 'nome', x->>'nome', 'sem_custo', v is null or v <= 0));
+  end loop;
+
+  update estoque_importacoes set alteradas = alt, criadas = coalesce(array_length(novos, 1), 0), zeradas = zer, anteriores = to_jsonb(ant), custos_ids = cus,
+    resumo = resumo || jsonb_build_object('criados', to_jsonb(novos))
+  where id = imp;
+  return jsonb_build_object('id', imp, 'alteradas', alt, 'zeradas', zer, 'custos', coalesce(array_length(cus, 1), 0), 'criados', to_jsonb(novos));
+end $$;
+revoke execute on function public.importar_estoque(jsonb) from public, anon;
+grant execute on function public.importar_estoque(jsonb) to authenticated;
+
+-- 11) Desfazer a última importação: volta saldos/marcas/unidades, apaga os custos lançados por ela
+--     e os produtos criados por ela que ainda não foram usados em orçamento
+create or replace function public.desfazer_importacao(imp_id uuid)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  c uuid := public.minha_conta(); quem text := lower(coalesce(auth.jwt()->>'email', ''));
+  imp estoque_importacoes; x jsonb; apagados integer := 0; mantidos integer := 0;
+begin
+  if c is null or not public.pode_alterar('orcamentos') then raise exception 'Seu perfil não pode desfazer importações.'; end if;
+  select * into imp from estoque_importacoes where id = imp_id and conta_id = c for update;
+  if imp.id is null then raise exception 'Importação não encontrada.'; end if;
+  if imp.desfeita_em is not null then raise exception 'Esta importação já foi desfeita.'; end if;
+  if exists (select 1 from estoque_importacoes where conta_id = c and em > imp.em and desfeita_em is null) then
+    raise exception 'Só dá para desfazer a última importação. Desfaça as mais novas primeiro.';
+  end if;
+  for x in select * from jsonb_array_elements(imp.anteriores) loop
+    update produtos set saldo = (x->>'saldo')::numeric, saldo_em = (x->>'saldo_em')::timestamptz, marca = x->>'marca', unidade = x->>'unidade',
+      categoria = x->>'categoria', nome = coalesce(x->>'nome', nome), codigo = x->>'codigo'
+    where id = (x->>'id')::uuid and conta_id = c;
+  end loop;
+  delete from produto_custos where conta_id = c and id = any (imp.custos_ids);
+  select count(*) into mantidos from produtos p where p.conta_id = c and p.importacao_id = imp.id
+    and exists (select 1 from orcamento_itens oi where oi.produto_id = p.id);
+  delete from produtos p where p.conta_id = c and p.importacao_id = imp.id
+    and not exists (select 1 from orcamento_itens oi where oi.produto_id = p.id);
+  get diagnostics apagados = row_count;
+  update estoque_importacoes set desfeita_em = now(), desfeita_por = quem where id = imp.id;
+  return jsonb_build_object('restaurados', jsonb_array_length(imp.anteriores), 'apagados', apagados, 'mantidos', mantidos);
+end $$;
+revoke execute on function public.desfazer_importacao(uuid) from public, anon;
+grant execute on function public.desfazer_importacao(uuid) to authenticated;
+
+-- 12) Juntar um possível duplicado (criado pela importação) com o produto que já existia.
+--     O código do que some vira apelido ("PDV:x"/"P:x" em chaves) e continua valendo; os saldos somam.
+create or replace function public.juntar_produto_estoque(manter uuid, apagar uuid)
+returns void language plpgsql security definer set search_path = public as $$
+declare c uuid := public.minha_conta(); a produtos; m produtos; ap text[];
+begin
+  if c is null or not public.pode_alterar('orcamentos') then raise exception 'Seu perfil não pode juntar produtos.'; end if;
+  select * into m from produtos where id = manter and conta_id = c for update;
+  select * into a from produtos where id = apagar and conta_id = c for update;
+  if m.id is null or a.id is null or m.id = a.id then raise exception 'Produtos inválidos para juntar.'; end if;
+  ap := array_remove(array[case when a.codigo is not null and m.codigo is not null then 'PDV:' || a.codigo end,
+                           case when a.codigo_planilha is not null then 'P:' || a.codigo_planilha end], null)
+        || coalesce(array(select k from unnest(a.chaves) k where k like 'PDV:%' or k like 'P:%'), '{}');
+  update orcamento_itens set produto_id = m.id where produto_id = a.id;
+  update produto_custos set produto_id = m.id where produto_id = a.id;
+  update itens set produto_id = m.id where produto_id = a.id;
+  update itens_ganhos set produto_id = m.id where produto_id = a.id;
+  delete from produtos where id = a.id;
+  update produtos set codigo = coalesce(m.codigo, a.codigo), marca = coalesce(m.marca, a.marca), unidade = coalesce(m.unidade, a.unidade),
+    categoria = coalesce(m.categoria, a.categoria),
+    saldo = coalesce(m.saldo, 0) + coalesce(a.saldo, 0),
+    saldo_em = greatest(m.saldo_em, a.saldo_em),
+    chaves = (select coalesce(array_agg(distinct k), '{}') from unnest(m.chaves || ap) k)
+  where id = m.id;
+  update produtos set (custo_atual, custo_marca, custo_em, custo_por) = (
+    select valor, marca, anotado_em, anotado_por from produto_custos where produto_id = m.id order by anotado_em desc limit 1)
+  where id = m.id;
+end $$;
+revoke execute on function public.juntar_produto_estoque(uuid, uuid) from public, anon;
+grant execute on function public.juntar_produto_estoque(uuid, uuid) to authenticated;

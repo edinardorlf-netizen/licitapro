@@ -34,7 +34,7 @@ const PAPEIS = ["admin", "equipe"];
 const papelDe = (v: unknown) => (v === "acompanha" ? "equipe" : String(v || ""));
 // Permissões por área: ver (<área>) e alterar (<área>_alterar). Só o administrador Auraxis muda (tabela do painel).
 // O administrador da conta cadastra pessoas (só vendo Acompanhamento e Contratos), dá senha provisória e bloqueia, mas não libera áreas.
-const AREAS = ["radar", "processos", "proposta", "robo", "contratos", "demandas", "reequilibrio", "agenda", "catalogo", "custos"];
+const AREAS = ["radar", "processos", "proposta", "robo", "contratos", "demandas", "reequilibrio", "agenda", "catalogo", "custos", "orcamentos"];
 const SEM_ALTERAR = ["agenda"];
 const PERM_IDS = [...AREAS, ...AREAS.filter((a) => !SEM_ALTERAR.includes(a)).map((a) => `${a}_alterar`)];
 const INICIAL: Record<string, boolean> = Object.fromEntries(PERM_IDS.map((k) => [k, k === "processos" || k === "contratos"]));

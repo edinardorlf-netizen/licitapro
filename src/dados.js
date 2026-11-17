@@ -12,7 +12,8 @@ export async function todas(montar, max = 30000) {
   return out;
 }
 
-export const carregarProdutos = () => todas(() => sb.from("produtos").select("*").order("nome"));
+// Produtos das licitações (agrupamento). Os de venda (planilha/PDV) ficam na aba Orçamentos.
+export const carregarProdutos = () => todas(() => sb.from("produtos").select("*").eq("origem", "licitacao").order("nome"));
 export const carregarCustos = () => todas(() => sb.from("produto_custos").select("*").order("anotado_em", { ascending: false }));
 export const carregarGanhos = () => todas(() => sb.from("itens_ganhos").select("id,processo_id,item_id,produto_id,numero,descricao,unidade,quantidade,valor_unitario,marca,custo_unit,quantidade_entregue,ata_numero,contrato_numero,vigencia_inicio,vigencia_fim,processos(orgao,municipio,numero,data_sessao,resultado,empresa_id,validade_dias,validade_fonte,validade_trecho,objeto,portal)").order("numero"));
 export const carregarItensNossos = () => todas(() => sb.from("itens").select("id,processo_id,produto_id,numero,descricao,unidade,quantidade,custo,preco_unit,marca,anvisa").eq("participar", true));

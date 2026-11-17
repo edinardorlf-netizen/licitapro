@@ -82,6 +82,7 @@ export const PERMISSOES = [
   { id: "agenda", nome: "Agenda", pai: "processos", soVer: true },
   { id: "catalogo", nome: "Produtos (preço médio de venda)" },
   { id: "custos", nome: "Ver e lançar custos e markup" },
+  { id: "orcamentos", nome: "Orçamentos de venda e estoque" },
 ];
 export function temPerm(permissoes, k) {
   const p = permissoes || {};
