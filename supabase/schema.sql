@@ -1461,3 +1461,142 @@ begin
 end $$;
 revoke execute on function public.separar_grupo(uuid[], uuid[], text) from public, anon;
 grant execute on function public.separar_grupo(uuid[], uuid[], text) to authenticated;
+
+-- Migração permissoes_ver_alterar (17/11/2026)
+-- Perfil passa a ser só Administrador ou Usuário (papel 'equipe'); "acompanha" deixa de existir.
+-- Cada área tem duas permissões: ver (<area>) e alterar (<area>_alterar). A antiga "editar" (geral) sai.
+
+-- 1) Converte quem já existe: alterar = (perfil equipe e "editar" marcado) e área visível; herança pai explícita
+with base as (
+  select e.email,
+         e.permissoes p,
+         (e.papel = 'equipe' and coalesce((e.permissoes->>'editar')::boolean, false)) ed
+  from equipe e where e.papel <> 'admin'
+), v as (
+  select email, ed,
+    coalesce((p->>'radar')::boolean, false) radar,
+    coalesce((p->>'processos')::boolean, false) processos,
+    coalesce((p->>'proposta')::boolean, coalesce((p->>'processos')::boolean, false)) proposta,
+    coalesce((p->>'robo')::boolean, false) robo,
+    coalesce((p->>'contratos')::boolean, false) contratos,
+    coalesce((p->>'demandas')::boolean, coalesce((p->>'contratos')::boolean, false)) demandas,
+    coalesce((p->>'reequilibrio')::boolean, false) reequilibrio,
+    coalesce((p->>'agenda')::boolean, coalesce((p->>'processos')::boolean, false)) agenda,
+    coalesce((p->>'catalogo')::boolean, false) catalogo,
+    coalesce((p->>'custos')::boolean, false) custos
+  from base
+)
+update equipe e set papel = 'equipe', permissoes = jsonb_build_object(
+  'radar', v.radar, 'radar_alterar', v.radar and v.ed,
+  'processos', v.processos, 'processos_alterar', v.processos and v.ed,
+  'proposta', v.proposta, 'proposta_alterar', v.proposta and v.ed,
+  'robo', v.robo, 'robo_alterar', v.robo and v.ed,
+  'contratos', v.contratos, 'contratos_alterar', v.contratos and v.ed,
+  'demandas', v.demandas, 'demandas_alterar', v.demandas and v.ed,
+  'reequilibrio', v.reequilibrio, 'reequilibrio_alterar', v.reequilibrio and v.ed,
+  'agenda', v.agenda,
+  'catalogo', v.catalogo, 'catalogo_alterar', v.catalogo and v.ed,
+  'custos', v.custos, 'custos_alterar', v.custos and v.ed)
+from v where v.email = e.email;
+
+alter table public.equipe drop constraint if exists equipe_papel_check;
+alter table public.equipe add constraint equipe_papel_check check (papel = any (array['admin','equipe']));
+alter table public.equipe alter column papel set default 'equipe';
+
+-- 2) Funções
+create or replace function public.pode_alterar(a text) returns boolean
+language sql stable security definer set search_path to 'public' as $$
+  select public.is_admin() or (public.is_equipe() and public.tem_perm(a) and public.tem_perm(a || '_alterar'));
+$$;
+grant execute on function public.pode_alterar(text) to authenticated;
+
+-- pode_editar() = altera alguma área (usado em acessos e telas gerais)
+create or replace function public.pode_editar() returns boolean
+language sql stable set search_path to 'public' as $$
+  select public.is_admin() or exists (
+    select 1 from equipe e join contas k on k.id = e.conta_id and k.ativa, jsonb_each_text(e.permissoes) x
+    where e.email = lower(coalesce(auth.jwt()->>'email', '')) and e.ativo
+      and x.key like '%\_alterar' and x.value = 'true');
+$$;
+
+-- 3) Regras das tabelas: cada uma pela sua área
+drop policy if exists "apagar contratos" on contratos;
+create policy "apagar contratos" on contratos for delete using ((select public.pode_alterar('contratos')));
+drop policy if exists "lancar contratos" on contratos;
+create policy "lancar contratos" on contratos for insert with check ((select public.pode_alterar('contratos')));
+drop policy if exists "editar contratos" on contratos;
+create policy "editar contratos" on contratos for update using ((select public.pode_alterar('contratos'))) with check ((select public.pode_alterar('contratos')));
+
+drop policy if exists "marcar editais" on editais;
+create policy "marcar editais" on editais for update using ((select public.pode_alterar('radar'))) with check ((select public.pode_alterar('radar')));
+
+drop policy if exists "ver dados da proposta" on empresa_proposta;
+create policy "ver dados da proposta" on empresa_proposta for select using ((select public.pode_alterar('proposta')) or (select public.pode_alterar('processos')));
+drop policy if exists "ver modelos" on modelos_documentos;
+create policy "ver modelos" on modelos_documentos for select using ((select public.pode_alterar('proposta')) or (select public.pode_alterar('processos')));
+
+drop policy if exists "editar itens" on itens;
+create policy "editar itens" on itens for update
+  using ((select public.pode_alterar('processos')) or (select public.pode_alterar('proposta')) or (select public.pode_alterar('robo')) or (select public.pode_alterar('catalogo')))
+  with check ((select public.pode_alterar('processos')) or (select public.pode_alterar('proposta')) or (select public.pode_alterar('robo')) or (select public.pode_alterar('catalogo')));
+
+drop policy if exists "apagar itens ganhos" on itens_ganhos;
+create policy "apagar itens ganhos" on itens_ganhos for delete using ((select public.pode_alterar('processos')) or (select public.pode_alterar('contratos')));
+drop policy if exists "incluir itens ganhos" on itens_ganhos;
+create policy "incluir itens ganhos" on itens_ganhos for insert with check ((select public.pode_alterar('processos')) or (select public.pode_alterar('contratos')));
+drop policy if exists "editar itens ganhos" on itens_ganhos;
+create policy "editar itens ganhos" on itens_ganhos for update
+  using ((select public.pode_alterar('processos')) or (select public.pode_alterar('contratos')) or (select public.pode_alterar('demandas')) or (select public.pode_alterar('reequilibrio')) or (select public.pode_alterar('catalogo')))
+  with check ((select public.pode_alterar('processos')) or (select public.pode_alterar('contratos')) or (select public.pode_alterar('demandas')) or (select public.pode_alterar('reequilibrio')) or (select public.pode_alterar('catalogo')));
+
+drop policy if exists "lancar itens da ordem" on ordem_itens;
+create policy "lancar itens da ordem" on ordem_itens for all using ((select public.pode_alterar('demandas'))) with check ((select public.pode_alterar('demandas')));
+drop policy if exists "lancar ordens" on ordens_fornecimento;
+create policy "lancar ordens" on ordens_fornecimento for all using ((select public.pode_alterar('demandas'))) with check ((select public.pode_alterar('demandas')));
+-- ver ordens: também quem tem Compras sem Contratos
+drop policy if exists "ver ordens" on ordens_fornecimento;
+create policy "ver ordens" on ordens_fornecimento for select using ((select public.is_equipe()) and ((select public.tem_perm('contratos')) or (select public.tem_perm('demandas'))));
+drop policy if exists "ver itens da ordem" on ordem_itens;
+create policy "ver itens da ordem" on ordem_itens for select using ((select public.is_equipe()) and ((select public.tem_perm('contratos')) or (select public.tem_perm('demandas'))));
+
+drop policy if exists "editar palavras" on palavras;
+create policy "editar palavras" on palavras for all using ((select public.pode_alterar('radar'))) with check ((select public.pode_alterar('radar')));
+
+drop policy if exists "apagar processos" on processos;
+create policy "apagar processos" on processos for delete using ((select public.pode_alterar('processos')));
+drop policy if exists "editar processos" on processos;
+create policy "editar processos" on processos for update
+  using ((select public.pode_alterar('processos')) or (select public.pode_alterar('proposta')) or (select public.pode_alterar('contratos')) or (select public.pode_alterar('reequilibrio')) or (select public.pode_alterar('robo')))
+  with check ((select public.pode_alterar('processos')) or (select public.pode_alterar('proposta')) or (select public.pode_alterar('contratos')) or (select public.pode_alterar('reequilibrio')) or (select public.pode_alterar('robo')));
+
+drop policy if exists "apagar custos" on produto_custos;
+create policy "apagar custos" on produto_custos for delete using ((select public.pode_alterar('custos')));
+drop policy if exists "anotar custos" on produto_custos;
+create policy "anotar custos" on produto_custos for insert with check ((select public.pode_alterar('custos')) and anotado_por = lower(auth.jwt()->>'email'));
+
+drop policy if exists "editar produtos" on produtos;
+create policy "editar produtos" on produtos for all using ((select public.pode_alterar('catalogo')) or (select public.pode_alterar('custos'))) with check ((select public.pode_alterar('catalogo')) or (select public.pode_alterar('custos')));
+
+drop policy if exists "robo tirar disputas" on robo_disputas;
+create policy "robo tirar disputas" on robo_disputas for delete using ((select public.pode_alterar('robo')));
+drop policy if exists "robo ligar disputas" on robo_disputas;
+create policy "robo ligar disputas" on robo_disputas for insert with check ((select public.pode_alterar('robo')));
+drop policy if exists "robo criar itens" on robo_itens;
+create policy "robo criar itens" on robo_itens for insert with check ((select public.pode_alterar('robo')));
+drop policy if exists "robo criar pedidos" on robo_pedidos;
+create policy "robo criar pedidos" on robo_pedidos for insert with check ((select public.pode_alterar('robo')));
+
+-- 4) Funções que conferiam "editar" geral passam a conferir a área
+do $$
+declare f record; d text;
+begin
+  for f in select p.oid from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname = 'public' and p.proname in ('aplicar_agrupamento','separar_item','juntar_produtos','unificar_produto','separar_grupo') loop
+    d := replace(pg_get_functiondef(f.oid), '(public.pode_editar() and public.tem_perm(''catalogo''))', 'public.pode_alterar(''catalogo'')');
+    if position('pode_alterar(''catalogo'')' in d) = 0 then raise exception 'função % sem o trecho esperado', f.oid::regproc; end if;
+    execute d;
+  end loop;
+  d := replace(pg_get_functiondef('public.salvar_categorias'::regproc), 'if not pode_editar() then', 'if not public.pode_alterar(''radar'') then');
+  if position('pode_alterar(''radar'')' in d) = 0 then raise exception 'salvar_categorias sem o trecho esperado'; end if;
+  execute d;
+end $$;

@@ -29,7 +29,7 @@ import LeituraEdital from "./LeituraEdital.jsx";
 import { Entrar, VincularAparelho, TrocarSenha, CampoSenha, LinkConta, prenderAparelho, aparelhoLido, ehInterno } from "./Acesso.jsx";
 import PainelAuraxis from "./PainelAuraxis.jsx";
 import {
-  sb, appUrl, portal, PORTAIS, ETAPAS, etapa, ATIVAS, A_LANCAR, ACOMPANHANDO, CATEGORIAS, RESULTADOS, resultado, ganhou, PAPEIS, PERMISSOES, temPerm, fmtData, fmtDataCurta, fmtHora, fmtDH, diaChave, hojeChave,
+  sb, appUrl, portal, PORTAIS, ETAPAS, etapa, ATIVAS, A_LANCAR, ACOMPANHANDO, CATEGORIAS, RESULTADOS, resultado, ganhou, PAPEIS, PERMISSOES, temPerm, podeAlterar, algumaAlteracao, fmtData, fmtDataCurta, fmtHora, fmtDH, diaChave, hojeChave,
   diaLongo, falta, brl, num, parseNum, fmtIn, errMsg, chamarRobo, iniciais,
 } from "./util.js";
 
@@ -508,7 +508,9 @@ function Painel({ session, papel, acesso, abrirAuraxis, notify }) {
   const admin = papel === "admin";
   // O administrador da conta vê tudo; os demais só as áreas liberadas pela Auraxis (painel Auraxis)
   const perm = (k) => admin || !!(eu && temPerm(eu.permissoes, k));
-  const podeEquipe = admin || (papel === "equipe" && perm("editar"));
+  // Alterar é por área (painel Auraxis): alt("processos"), alt("contratos")…; podeEquipe = altera alguma área
+  const alt = (k) => admin || !!(eu && podeAlterar(eu.permissoes, k));
+  const podeEquipe = admin || !!(eu && algumaAlteracao(eu.permissoes));
   const pode = podeEquipe && !celular; // edição completa só no computador
 
   const carregar = useCallback(async () => {
@@ -558,26 +560,28 @@ function Painel({ session, papel, acesso, abrirAuraxis, notify }) {
   const totalNV = Object.values(naoVistas).reduce((a, r) => a + Number(r.importantes || 0), 0);
   // celular: só monitoramento (robô, produtos e reequilíbrio ficam no computador)
   const abas = TABS.filter((t) => (!celular || !t.pc) && (!PERM_ABA[t.id] || perm(PERM_ABA[t.id])));
-  const ctx = { session, email, papel, admin, perm, pode, podeEquipe, celular, equipe, config, empresas, procs, naoVistas, carregar, notify, abrir, ir, setConfig, conta, abrirAuraxis };
+  const ctx = { session, email, papel, admin, perm, alt, pode, podeEquipe, celular, equipe, config, empresas, procs, naoVistas, carregar, notify, abrir, ir, setConfig, conta, abrirAuraxis };
   // Aba sem permissão (ex.: link antigo): vai para a primeira liberada
   useEffect(() => {
     if (!admin && !eu) return; // ainda carregando a equipe
     if (!abas.some((t) => t.id === tab)) { setProcId(null); setTab(abas[0] ? abas[0].id : "ajustes"); }
   }, [tab, admin, eu && JSON.stringify(eu.permissoes), celular]);
 
+  // Cada tela recebe "pode" (computador) e "podeEquipe" (qualquer aparelho) da sua própria área
+  const ctxDe = (k) => ({ ...ctx, pode: alt(k) && !celular, podeEquipe: alt(k) });
   let tela;
   if (!admin && !eu) tela = <div className="card empty">Carregando…</div>;
-  else if (procId && perm("processos")) tela = <Processo key={`${procId}-${abaIni || ""}`} id={procId} abaInicial={abaIni} ctx={ctx} onBack={() => { setProcId(null); setAbaIni(null); carregar(); }} />;
-  else if (tab === "proposta") tela = <PropostaEtapa ctx={ctx} />;
-  else if (tab === "catalogo") tela = <Catalogo ctx={ctx} />;
-  else if (tab === "reequilibrio") tela = <Reequilibrio ctx={ctx} />;
+  else if (procId && perm("processos")) tela = <Processo key={`${procId}-${abaIni || ""}`} id={procId} abaInicial={abaIni} ctx={ctxDe("processos")} onBack={() => { setProcId(null); setAbaIni(null); carregar(); }} />;
+  else if (tab === "proposta") tela = <PropostaEtapa ctx={ctxDe("proposta")} />;
+  else if (tab === "catalogo") tela = <Catalogo ctx={ctxDe("catalogo")} />;
+  else if (tab === "reequilibrio") tela = <Reequilibrio ctx={ctxDe("reequilibrio")} />;
   else if (tab === "inicio") tela = <Inicio ctx={ctx} />;
-  else if (tab === "radar") tela = <Radar ctx={ctx} />;
-  else if (tab === "processos") tela = <Processos ctx={ctx} />;
-  else if (tab === "contratos") tela = <Contratos ctx={ctx} />;
-  else if (tab === "demandas") tela = <Demandas ctx={ctx} />;
+  else if (tab === "radar") tela = <Radar ctx={ctxDe("radar")} />;
+  else if (tab === "processos") tela = <Processos ctx={ctxDe("processos")} />;
+  else if (tab === "contratos") tela = <Contratos ctx={ctxDe("contratos")} />;
+  else if (tab === "demandas") tela = <Demandas ctx={ctxDe("demandas")} />;
   else if (tab === "agenda") tela = <Agenda ctx={ctx} />;
-  else if (tab === "robo") tela = <RoboTela ctx={ctx} />;
+  else if (tab === "robo") tela = <RoboTela ctx={ctxDe("robo")} />;
   else tela = <Ajustes ctx={ctx} />;
 
   return (
@@ -1454,6 +1458,10 @@ function NovoProcesso({ ctx, onClose }) {
    ============================================================ */
 function Processo({ id, ctx, onBack, abaInicial }) {
   const { pode, email, equipe, notify } = ctx;
+  // Itens, cotação, edital e proposta: quem altera Proposta também altera aqui; itens ganhos: também quem altera Contratos
+  const podeProp = !ctx.celular && (ctx.alt("proposta") || ctx.alt("processos"));
+  const podeGanhos = !ctx.celular && (ctx.alt("processos") || ctx.alt("contratos"));
+  const ctxProp = { ...ctx, pode: podeProp };
   const [p, setP] = useState(null);
   const [movs, setMovs] = useState([]);
   const [itens, setItens] = useState([]);
@@ -1726,26 +1734,26 @@ function Processo({ id, ctx, onBack, abaInicial }) {
             <label className="toggle"><input type="checkbox" checked={soMeus} onChange={(e) => setSoMeus(e.target.checked)} />Só os que vamos disputar</label>
           </div>
           <p className="hint" style={{ marginBottom: 12 }}>Marque os itens que a empresa vai disputar e digite o <b>valor mínimo</b> (piso) de cada um. Sem valor mínimo, o robô não dá lance no item.</p>
-          {!ctx.celular && itens.length > 0 && <CotacaoPainel p={p} itens={itens} pode={pode} notify={notify} onMudou={carregar} onProposta={() => setAba("proposta")} />}
+          {!ctx.celular && itens.length > 0 && <CotacaoPainel p={p} itens={itens} pode={podeProp} notify={notify} onMudou={carregar} onProposta={() => setAba("proposta")} />}
           {!itens.length ? <div className="empty">Os itens aparecem aqui depois da primeira verificação.</div> : (
             <div className="stack" style={{ gap: 10 }}>
-              {(soMeus ? meus : itens).map((it) => <Item key={it.id} it={it} pode={pode} notify={notify} email={email} ganho={ganhos.find((g) => g.numero === it.numero)} onGanho={marcarGanho} onSaved={(n) => setItens((l) => l.map((x) => (x.id === n.id ? n : x)))} />)}
+              {(soMeus ? meus : itens).map((it) => <Item key={it.id} it={it} pode={podeProp} notify={notify} email={email} ganho={ganhos.find((g) => g.numero === it.numero)} onGanho={marcarGanho} onSaved={(n) => setItens((l) => l.map((x) => (x.id === n.id ? n : x)))} />)}
               {soMeus && !meus.length && <div className="empty">Nenhum item marcado ainda.</div>}
             </div>
           )}
         </div>
       )}
 
-      {aba === "edital" && <LeituraEdital p={p} pode={pode} notify={notify} salvar={salvar} />}
-      {aba === "proposta" && !ctx.celular && <PropostaWord p={p} itens={itens} ganhos={ganhos} ctx={ctx} salvar={salvar} />}
-      {aba === "proposta" && !ctx.celular && itens.length > 0 && <PropostaGrade itens={itens} pode={pode} notify={notify} onSaved={(n) => setItens((l) => l.map((x) => (x.id === n.id ? n : x)))} />}
+      {aba === "edital" && <LeituraEdital p={p} pode={podeProp} notify={notify} salvar={salvar} />}
+      {aba === "proposta" && !ctx.celular && <PropostaWord p={p} itens={itens} ganhos={ganhos} ctx={ctxProp} salvar={salvar} />}
+      {aba === "proposta" && !ctx.celular && itens.length > 0 && <PropostaGrade itens={itens} pode={podeProp} notify={notify} onSaved={(n) => setItens((l) => l.map((x) => (x.id === n.id ? n : x)))} />}
 
-      {aba === "ganhos" && pode && !ctx.celular && ganhos.length > 0 && (
+      {aba === "ganhos" && podeProp && ganhos.length > 0 && (
         <div className="row-inline" style={{ justifyContent: "flex-end" }}>
           <button type="button" className="btn ghost sm" onClick={() => setAba("proposta")}>📄 Proposta ajustada em Word</button>
         </div>
       )}
-      {aba === "ganhos" && <ItensGanhos ctx={ctx} lista={ganhos} pode={pode} notify={notify} onMudou={carregar} unico />}
+      {aba === "ganhos" && <ItensGanhos ctx={ctx} lista={ganhos} pode={podeGanhos} notify={notify} onMudou={carregar} unico />}
 
       {pode && (
         <div className="row-inline" style={{ justifyContent: "flex-end" }}>
@@ -2061,7 +2069,7 @@ function Ajustes({ ctx }) {
     <div className="stack">
       <div className="top"><div><h1>Ajustes</h1><p>Empresas, acessos, categorias do radar, equipe e avisos</p></div></div>
       <Empresas ctx={ctx} />
-      <CategoriasAjustes pode={pode} notify={notify} />
+      <CategoriasAjustes pode={ctx.alt("radar") && !ctx.celular} notify={notify} />
       <div className="grid2">
         <div className="stack">
           <Equipe equipe={equipe} admin={admin} notify={notify} carregar={carregar} email={email} conta={ctx.conta} />
@@ -2075,7 +2083,7 @@ function Ajustes({ ctx }) {
           <SomAlerta />
         </div>
         <div className="stack">
-          <Palavras pode={pode} notify={notify} />
+          <Palavras pode={ctx.alt("radar") && !ctx.celular} notify={notify} />
           {config && <EstadosRadar config={config} admin={admin} notify={notify} setConfig={setConfig} />}
           {admin && config && <Telegram config={config} notify={notify} setConfig={setConfig} />}
           {conta}
@@ -2371,7 +2379,7 @@ function Equipe({ equipe, admin, notify, carregar, email, conta }) {
     if (!conta) return notify("Conta não identificada. Saia e entre de novo.");
     setBusy(true);
     try {
-      await chamarRobo({ acao: "pessoa_criar", conta_id: conta.id, nome, papel: "acompanha", senha: f.senha }, "licita-contas");
+      await chamarRobo({ acao: "pessoa_criar", conta_id: conta.id, nome, papel: "equipe", senha: f.senha }, "licita-contas");
       setF({ nome: "", senha: "" });
       notify(`Acesso de ${nome} criado. Entra com o nome "${nome}" e a senha provisória. Começa vendo só Acompanhamento e Contratos; para liberar mais, fale com a Auraxis.`);
       carregar();
@@ -2385,7 +2393,7 @@ function Equipe({ equipe, admin, notify, carregar, email, conta }) {
     catch (e2) { notify(errMsg(e2)); }
   };
   const upd = async (m, patch, msg) => { const { error } = await sb.from("equipe").update(patch).eq("email", m.email); if (error) return notify(errMsg(error)); if (msg) notify(msg); carregar(); };
-  const resumo = (m) => (m.papel === "admin" ? "Administrador: vê e altera tudo" : PERMISSOES.filter((p) => temPerm(m.permissoes, p.id)).map((p) => p.nome.split(" (")[0]).join(" · ") || "Nenhuma área liberada");
+  const resumo = (m) => (m.papel === "admin" ? "Administrador: vê e altera tudo" : PERMISSOES.filter((p) => temPerm(m.permissoes, p.id)).map((p) => p.nome.split(" (")[0] + (podeAlterar(m.permissoes, p.id) ? " (altera)" : "")).join(" · ") || "Nenhuma área liberada");
   return (
     <div className="card form">
       <div className="card-h" style={{ marginBottom: 0 }}><h2>Equipe</h2><small>{equipe.filter((m) => m.ativo).length} com acesso</small></div>

@@ -6,7 +6,7 @@
 // Tudo passa pela função licita-contas (o banco não deixa uma conta ver a outra).
 // =====================================================================
 import React, { useState, useEffect, useCallback } from "react";
-import { sb, chamarRobo, errMsg, PAPEIS, PERMISSOES, temPerm, fmtData } from "./util.js";
+import { sb, chamarRobo, errMsg, PAPEIS, PERMISSOES, temPerm, podeAlterar, fmtData } from "./util.js";
 import { codigoConta, LinkConta, prenderAparelho, useAparelho } from "./Acesso.jsx";
 
 const contas = (body) => chamarRobo(body, "licita-contas");
@@ -27,7 +27,8 @@ async function reduzirLogo(arq) {
 
 /* Permissões (igual ao LojaPro): tabela "o que cada pessoa pode ver e fazer". Só o administrador Auraxis
    muda; o administrador da conta vê tudo e não aparece aqui. Vale também no banco (regras por permissão). */
-const marcadas = (p) => Object.fromEntries(PERMISSOES.map((x) => [x.id, temPerm(p.permissoes, x.id)]));
+const ka = (id) => `${id}_alterar`;
+const marcadas = (p) => Object.fromEntries(PERMISSOES.flatMap((x) => [[x.id, temPerm(p.permissoes, x.id)], ...(x.soVer ? [] : [[ka(x.id), podeAlterar(p.permissoes, x.id)]])]));
 function TabelaPermissoes({ lista, notify, onSalvo }) {
   const pessoas = lista.filter((p) => p.papel !== "admin");
   const inicial = () => Object.fromEntries(pessoas.map((p) => [p.email, marcadas(p)]));
@@ -45,28 +46,44 @@ function TabelaPermissoes({ lista, notify, onSalvo }) {
     } catch (e) { notify(errMsg(e)); }
     setBusy(false);
   };
-  const tudo = (email, v) => setPerm({ ...perm, [email]: Object.fromEntries(PERMISSOES.map((x) => [x.id, v])) });
+  const tudo = (email, v, alterar = v) => setPerm({ ...perm, [email]: Object.fromEntries(PERMISSOES.flatMap((x) => [[x.id, v], ...(x.soVer ? [] : [[ka(x.id), alterar]])])) });
+  // Altera liga o Ver; tirar o Ver tira o Altera
+  const marcar = (email, id, campo, v) => {
+    const atual = { ...perm[email] };
+    if (campo === "ver") { atual[id] = v; if (!v && ka(id) in atual) atual[ka(id)] = false; }
+    else { atual[ka(id)] = v; if (v) atual[id] = true; }
+    setPerm({ ...perm, [email]: atual });
+  };
   return (
     <div className="stack" style={{ gap: 10 }}>
       <div style={{ overflowX: "auto" }}>
         <table className="itab">
-          <thead><tr><th>Permissão</th>{pessoas.map((p) => <th key={p.email} style={{ textAlign: "center" }}>{p.nome || p.email}{!p.ativo ? " (desligado)" : ""}</th>)}</tr></thead>
+          <thead>
+            <tr><th rowSpan={2}>Área</th>{pessoas.map((p) => <th key={p.email} colSpan={2} style={{ textAlign: "center" }}>{p.nome || p.email}{!p.ativo ? " (desligado)" : ""}</th>)}</tr>
+            <tr>{pessoas.map((p) => <React.Fragment key={p.email}><th style={{ textAlign: "center", fontWeight: 500 }}>Ver</th><th style={{ textAlign: "center", fontWeight: 500 }}>Altera</th></React.Fragment>)}</tr>
+          </thead>
           <tbody>
             {PERMISSOES.map((x) => (
               <tr key={x.id}>
                 <td>{x.nome}</td>
                 {pessoas.map((p) => (
-                  <td key={p.email} style={{ textAlign: "center" }}>
-                    <input type="checkbox" aria-label={`${x.nome} — ${p.nome}`} disabled={busy} checked={!!(perm[p.email] && perm[p.email][x.id])} onChange={(e) => setPerm({ ...perm, [p.email]: { ...perm[p.email], [x.id]: e.target.checked } })} />
-                  </td>
+                  <React.Fragment key={p.email}>
+                    <td style={{ textAlign: "center" }}>
+                      <input type="checkbox" aria-label={`Ver ${x.nome} — ${p.nome}`} disabled={busy} checked={!!(perm[p.email] && perm[p.email][x.id])} onChange={(e) => marcar(p.email, x.id, "ver", e.target.checked)} />
+                    </td>
+                    <td style={{ textAlign: "center" }}>
+                      {x.soVer ? <span className="hint">—</span> : <input type="checkbox" aria-label={`Alterar ${x.nome} — ${p.nome}`} disabled={busy} checked={!!(perm[p.email] && perm[p.email][ka(x.id)])} onChange={(e) => marcar(p.email, x.id, "alterar", e.target.checked)} />}
+                    </td>
+                  </React.Fragment>
                 ))}
               </tr>
             ))}
             <tr>
               <td className="hint">Marcar / desmarcar tudo</td>
               {pessoas.map((p) => (
-                <td key={p.email} style={{ textAlign: "center", whiteSpace: "nowrap" }}>
+                <td key={p.email} colSpan={2} style={{ textAlign: "center", whiteSpace: "nowrap" }}>
                   <button type="button" className="btn ghost sm" disabled={busy} onClick={() => tudo(p.email, true)}>Tudo</button>{" "}
+                  <button type="button" className="btn ghost sm" disabled={busy} onClick={() => tudo(p.email, true, false)}>Só ver</button>{" "}
                   <button type="button" className="btn ghost sm" disabled={busy} onClick={() => tudo(p.email, false)}>Nada</button>
                 </td>
               ))}
@@ -74,7 +91,7 @@ function TabelaPermissoes({ lista, notify, onSalvo }) {
           </tbody>
         </table>
       </div>
-      <p className="hint" style={{ margin: 0 }}>Quem não tem uma área marcada não vê essa aba no menu nem os dados dela. “Alterar dados” sem marcar = só olha. O administrador da empresa vê tudo e não muda permissões: só a Auraxis.</p>
+      <p className="hint" style={{ margin: 0 }}>“Ver” mostra a aba no menu e os dados dela. “Altera” deixa cadastrar, lançar e mudar naquela área (só no computador; Busca de Editais também no celular). Marcar “Altera” marca o “Ver”. O administrador da empresa vê e altera tudo e não aparece aqui.</p>
       <div className="row-inline" style={{ gap: 8 }}>
         <button type="button" className="btn" disabled={busy || !mudou.length} onClick={salvar}>{busy ? <span className="spin" /> : null}Salvar permissões{mudou.length ? ` (${mudou.length})` : ""}</button>
         {mudou.length > 0 && <button type="button" className="btn ghost" disabled={busy} onClick={() => setPerm(inicial())}>Desfazer</button>}
@@ -86,7 +103,7 @@ function TabelaPermissoes({ lista, notify, onSalvo }) {
 /* Pessoas de uma conta (painel Auraxis) */
 export function PessoasConta({ contaId, notify, euEmail, auraxis, onMudou }) {
   const [lista, setLista] = useState(null);
-  const [f, setF] = useState({ nome: "", papel: "acompanha", senha: "" });
+  const [f, setF] = useState({ nome: "", papel: "equipe", senha: "" });
   const [busy, setBusy] = useState("");
   const carregar = useCallback(() => contas({ acao: "pessoas", conta_id: contaId }).then((r) => setLista(r.pessoas || []), (e) => { notify(errMsg(e)); setLista([]); }), [contaId]);
   useEffect(() => { carregar(); }, [carregar]);
@@ -101,7 +118,7 @@ export function PessoasConta({ contaId, notify, euEmail, auraxis, onMudou }) {
     if (f.senha.length < 6) return notify("A senha provisória precisa ter pelo menos 6 caracteres.");
     const nome = f.nome.trim();
     fazer("novo", { acao: "pessoa_criar", conta_id: contaId, ...f }, `Acesso de ${nome} criado. Entra com o nome "${nome}" e a senha provisória; no primeiro acesso cria a própria senha.`)
-      .then(() => setF({ nome: "", papel: "acompanha", senha: "" }));
+      .then(() => setF({ nome: "", papel: "equipe", senha: "" }));
   };
   const novaSenha = (p) => {
     const s = prompt(`Nova senha provisória para ${p.nome || p.email} (mínimo 6 caracteres):`);
@@ -122,7 +139,7 @@ export function PessoasConta({ contaId, notify, euEmail, auraxis, onMudou }) {
                   <td>
                     {p.papel === "admin" ? PAPEIS.admin : (
                       <select className="input" style={{ minWidth: 150 }} value={p.papel} disabled={!!busy} onChange={(e) => fazer(p.email, { acao: "pessoa_alterar", email: p.email, papel: e.target.value }, "Perfil alterado")}>
-                        {Object.entries(PAPEIS).filter(([k]) => k !== "admin" || (auraxis && !lista.some((x) => x.papel === "admin"))).map(([k, n]) => <option key={k} value={k}>{n}</option>)}
+                        {Object.entries(PAPEIS).filter(([k]) => k !== "acompanha").filter(([k]) => k !== "admin" || (auraxis && !lista.some((x) => x.papel === "admin"))).map(([k, n]) => <option key={k} value={k}>{n}</option>)}
                       </select>
                     )}
                   </td>
@@ -153,7 +170,7 @@ export function PessoasConta({ contaId, notify, euEmail, auraxis, onMudou }) {
           <div className="field"><label htmlFor={`pc-nome-${contaId}`}>Nome (é o que a pessoa digita para entrar)</label><input id={`pc-nome-${contaId}`} className="input" maxLength={60} value={f.nome} onChange={(e) => setF({ ...f, nome: e.target.value })} placeholder="Ex.: Marcio" /></div>
           <div className="field"><label htmlFor={`pc-papel-${contaId}`}>Perfil</label>
             <select id={`pc-papel-${contaId}`} className="input" value={f.papel} onChange={(e) => setF({ ...f, papel: e.target.value })}>
-              {Object.entries(PAPEIS).filter(([k]) => k !== "admin" || (auraxis && lista && !lista.some((p) => p.papel === "admin"))).map(([k, n]) => <option key={k} value={k}>{k === "admin" ? "Administrador (dono da empresa)" : n}</option>)}
+              {Object.entries(PAPEIS).filter(([k]) => k !== "acompanha").filter(([k]) => k !== "admin" || (auraxis && lista && !lista.some((p) => p.papel === "admin"))).map(([k, n]) => <option key={k} value={k}>{k === "admin" ? "Administrador (dono da empresa)" : n}</option>)}
             </select>
           </div>
           <div className="field"><label htmlFor={`pc-senha-${contaId}`}>Senha provisória</label><input id={`pc-senha-${contaId}`} className="input" autoComplete="off" minLength={6} value={f.senha} onChange={(e) => setF({ ...f, senha: e.target.value })} /></div>

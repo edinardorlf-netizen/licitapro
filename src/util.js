@@ -79,10 +79,9 @@ export const PERMISSOES = [
   { id: "contratos", nome: "Contratos (itens ganhos)" },
   { id: "demandas", nome: "Compras (ordens de fornecimento)", pai: "contratos" },
   { id: "reequilibrio", nome: "Reequilíbrio de preços" },
-  { id: "agenda", nome: "Agenda", pai: "processos" },
+  { id: "agenda", nome: "Agenda", pai: "processos", soVer: true },
   { id: "catalogo", nome: "Produtos (preço médio de venda)" },
   { id: "custos", nome: "Ver e lançar custos e markup" },
-  { id: "editar", nome: "Alterar dados (cadastrar, lançar preços, marcar itens)" },
 ];
 export function temPerm(permissoes, k) {
   const p = permissoes || {};
@@ -91,10 +90,22 @@ export function temPerm(permissoes, k) {
   return !!(d && d.pai && p[d.pai]);
 }
 
+// Alterar por área: "<área>_alterar" (só vale com o ver). Sem gravar, herda do "pai" e, nas contas antigas, de "editar".
+export function podeAlterar(permissoes, k) {
+  const p = permissoes || {};
+  const d = PERMISSOES.find((x) => x.id === k);
+  if (!d || d.soVer || !temPerm(p, k)) return false;
+  const ka = `${k}_alterar`;
+  if (p[ka] !== undefined) return !!p[ka];
+  if (d.pai) return podeAlterar(p, d.pai);
+  return !!p.editar;
+}
+export const algumaAlteracao = (permissoes) => PERMISSOES.some((x) => podeAlterar(permissoes, x.id));
+
 export const PAPEIS = {
   admin: "Administrador",
-  equipe: "Equipe (busca, propostas e disputas)",
-  acompanha: "Acompanha disputas",
+  equipe: "Usuário",
+  acompanha: "Usuário",
 };
 
 const TZ = "America/Sao_Paulo";

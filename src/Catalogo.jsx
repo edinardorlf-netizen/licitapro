@@ -42,7 +42,7 @@ export function MarkupMinimo({ ctx }) {
 export default function Catalogo({ ctx }) {
   const { pode, perm, notify, config } = ctx;
   const verCusto = perm("custos");
-  const podeCusto = pode && verCusto;
+  const podeCusto = !ctx.celular && (ctx.alt ? ctx.alt("custos") : pode && verCusto);
   const podeCat = pode && perm("catalogo");
   const minimo = config ? Number(config.markup_minimo) : 20;
   const [dados, setDados] = useState(null);
