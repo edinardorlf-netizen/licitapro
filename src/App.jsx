@@ -1261,6 +1261,7 @@ function Contratos({ ctx }) {
         <div className="card"><div className="hint clamp2" style={{ color: "var(--ink-2)" }}>{c.p.objeto}</div>
           <div className="row-inline" style={{ marginTop: 8 }}><PortalTag k={c.p.portal} /><ResultadoTag id={c.p.resultado} /><span className="tag ok">{c.itens.length} item(ns) vencido(s)</span><span className="tag">Total {brl(c.total)}</span></div>
         </div>
+        <DadosProcesso id={c.id} ctx={ctx} contrato={c} />
         <ContratosLancados ctx={ctx} processoId={c.id} processo={(procs || []).find((p) => p.id === c.id) || { id: c.id, ...c.p }} />
         <ItensGanhos ctx={ctx} lista={c.itens} pode={pode} notify={notify} onMudou={carregarGanhos} unico abrir={abrir} />
       </div>
@@ -1328,6 +1329,49 @@ function Contratos({ ctx }) {
         </div>
       )}
       </>}
+    </div>
+  );
+}
+
+/* Informações básicas do processo, dentro do contrato (Contratos → abrir um contrato) */
+function DadosProcesso({ id, ctx, contrato }) {
+  const [p, setP] = useState(null);
+  useEffect(() => {
+    sb.from("processos").select("orgao,municipio,numero,numero_processo,modalidade,srp,objeto,portal,link_origem,cnpj,ano,seq,controle_pncp,data_sessao,situacao_portal,situacao_pncp,valor_estimado,valor_homologado,empresa_id,responsavel,etapa,resultado,created_at")
+      .eq("id", id).maybeSingle().then(({ data }) => setP(data || {}));
+  }, [id]);
+  if (!p) return <div className="card empty">Carregando os dados do processo…</div>;
+  const emp = (ctx.empresas || []).find((e) => e.id === p.empresa_id);
+  const resp = (ctx.equipe || []).find((x) => x.email === p.responsavel);
+  const pncp = p.cnpj ? `https://pncp.gov.br/app/editais/${p.cnpj}/${p.ano}/${p.seq}` : null;
+  const F = ({ t, v }) => <div className="fact"><small>{t}</small><b>{v == null || v === "" ? "—" : v}</b></div>;
+  return (
+    <div className="card stack" style={{ gap: 12 }}>
+      <div className="card-h" style={{ marginBottom: 0 }}><h2>📋 Dados do processo</h2>
+        <div className="row-inline" style={{ gap: 8 }}>
+          {p.link_origem && <a className="btn ghost sm" href={p.link_origem} target="_blank" rel="noopener noreferrer"><Icon name="ext" size={14} />Abrir no portal</a>}
+          {pncp && <a className="btn ghost sm" href={pncp} target="_blank" rel="noopener noreferrer"><Icon name="ext" size={14} />Ver no PNCP</a>}
+        </div>
+      </div>
+      <div className="facts">
+        <F t="Órgão" v={[p.orgao, p.municipio].filter(Boolean).join(" · ")} />
+        <F t="Modalidade e nº" v={[p.modalidade, p.numero && `Nº ${p.numero}`].filter(Boolean).join(" · ")} />
+        <F t="Nº do processo licitatório" v={p.numero_processo} />
+        <F t="Registro de preços" v={p.srp == null ? null : p.srp ? "Sim" : "Não"} />
+        <F t="Portal" v={portal(p.portal).nome} />
+        <F t="Sessão" v={p.data_sessao ? fmtDH(p.data_sessao) : null} />
+        <F t="Situação" v={p.situacao_portal || p.situacao_pncp} />
+        <F t="Etapa / resultado" v={[etapa(p.etapa).nome, resultado(p.resultado) && resultado(p.resultado).nome].filter(Boolean).join(" · ")} />
+        <F t="Valor estimado" v={Number(p.valor_estimado) > 0 ? brl(p.valor_estimado) : "Sigiloso ou não informado"} />
+        <F t="Valor homologado (processo)" v={Number(p.valor_homologado) > 0 ? brl(p.valor_homologado) : null} />
+        <F t="Valor vencido pela empresa" v={brl(contrato.total)} />
+        <F t="Empresa" v={emp ? nomeCurto(emp) : null} />
+        <F t="Responsável" v={resp ? resp.nome || resp.email : null} />
+        <F t="Ata / contrato" v={[contrato.ata.length ? `Ata ${contrato.ata.join(", ")}` : null, contrato.contrato.length ? `Contrato ${contrato.contrato.join(", ")}` : null].filter(Boolean).join(" · ") || "Não lançado"} />
+        <F t="Vigência até" v={contrato.vigFim ? fmtData(contrato.vigFim + "T12:00:00") : "Não informada"} />
+        <F t="Controle PNCP" v={p.controle_pncp} />
+      </div>
+      {p.objeto && <div><small className="hint">Objeto</small><div style={{ color: "var(--ink-2)" }}>{p.objeto}</div></div>}
     </div>
   );
 }

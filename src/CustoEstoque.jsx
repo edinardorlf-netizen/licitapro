@@ -22,6 +22,7 @@ const OPOSTOS = [
   ["NASAL", "INTRAVENOSO", "VESICAL", "URETRAL", "GASTRICA"],
   ["ESTERIL", "N ESTERIL", "NAO ESTERIL"],
   ["LASER", "CLINICO", "INFRAVERMELHO"],
+  ["RETA", "CURVA"],
   ["LATEX", "NITRILICA", "VINIL", "PLASTICA"],
 ];
 const palavras = (s) => ` ${String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toUpperCase().replace(/[^A-Z0-9]+/g, " ").trim()} `;
@@ -33,7 +34,7 @@ function opostos(a, b) {
   });
 }
 // O estoque é mais específico que o item vencido (tem número, tamanho ou medida que o item não tem): só "conferir"
-const maisEspecifico = (c, e) => (!c.cal && !!e.cal) || (!c.tam && !!e.tam) || (!(c.dims || []).length && (e.dims || []).length > 0) || (!(c.vols || []).length && (e.vols || []).length > 0);
+const maisEspecifico = (c, e) => ((c.tokens || []).length <= 2 && (e.tokens || []).length >= (c.tokens || []).length + 2) || (!c.cal && !!e.cal) || (!c.tam && !!e.tam) || (!(c.dims || []).length && (e.dims || []).length > 0) || (!(c.vols || []).length && (e.vols || []).length > 0);
 
 // A embalagem (caixa, pacote) fica fora da comparação: o estoque mistura unidade e caixa.
 const semEmb = (base) => (base.startsWith("M|") ? base.split("|").slice(0, -1).join("|") : base);
