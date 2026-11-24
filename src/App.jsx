@@ -1264,6 +1264,7 @@ function Contratos({ ctx }) {
         <DadosProcesso id={c.id} ctx={ctx} contrato={c} />
         <ContratosLancados ctx={ctx} processoId={c.id} processo={(procs || []).find((p) => p.id === c.id) || { id: c.id, ...c.p }} />
         <ItensGanhos ctx={ctx} lista={c.itens} pode={pode} notify={notify} onMudou={carregarGanhos} unico abrir={abrir} />
+        {ctx.perm && ctx.perm("custos") && !ctx.celular && <CustoEstoque ctx={ctx} onLigou={carregarGanhos} processoId={c.id} />}
       </div>
     );
   }
@@ -1281,7 +1282,6 @@ function Contratos({ ctx }) {
         <div className="card kpi"><small>Itens vencidos</small><b className="num">{itensGeral}</b><small>Em todos os contratos</small></div>
         <div className="card kpi"><small>Valor total</small><b className="num">{brl(totalGeral)}</b><small>Quantidade × valor unitário</small></div>
       </div>
-      {ctx.perm && ctx.perm("custos") && !ctx.celular && <CustoEstoque ctx={ctx} onLigou={carregarGanhos} />}
       <div className="seg cats" role="tablist">
         {SITS.map((s) => { const n = daEmpresa.filter(s.teste).length; return (
           <button key={s.id} role="tab" aria-selected={sit === s.id} className={sit === s.id ? "on" : ""} onClick={() => setSit(s.id)}>{s.nome}{n ? <span className="cnt">{n}</span> : null}</button>

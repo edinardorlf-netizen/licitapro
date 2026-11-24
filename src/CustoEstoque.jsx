@@ -46,7 +46,7 @@ const UNID = (u) => {
   return "UN";
 };
 
-export default function CustoEstoque({ ctx, onLigou }) {
+export default function CustoEstoque({ ctx, onLigou, processoId }) {
   const { notify, email } = ctx;
   const pode = ctx.alt && (ctx.alt("custos") || ctx.alt("catalogo") || ctx.alt("orcamentos"));
   const [aberto, setAberto] = useState(false);
@@ -60,7 +60,7 @@ export default function CustoEstoque({ ctx, onLigou }) {
   const carregar = async () => {
     setErro("");
     try {
-      const ganhos = await todas(() => sb.from("itens_ganhos").select("produto_id,quantidade,valor_unitario,unidade").not("produto_id", "is", null));
+      const ganhos = await todas(() => { let qq = sb.from("itens_ganhos").select("produto_id,quantidade,valor_unitario,unidade").not("produto_id", "is", null); if (processoId) qq = qq.eq("processo_id", processoId); return qq; });
       const porProd = {};
       ganhos.forEach((g) => { const x = (porProd[g.produto_id] = porProd[g.produto_id] || { itens: 0, total: 0, vu: [], unidade: g.unidade }); x.itens++; x.total += (Number(g.quantidade) || 0) * (Number(g.valor_unitario) || 0); if (g.valor_unitario != null) x.vu.push(Number(g.valor_unitario)); });
       const ids = Object.keys(porProd);
