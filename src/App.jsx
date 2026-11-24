@@ -23,7 +23,6 @@ import PropostaWord from "./PropostaWord.jsx";
 import Catalogo, { MarkupMinimo } from "./Catalogo.jsx";
 import Reequilibrio from "./Reequilibrio.jsx";
 import ContratosLancados from "./ContratosLancados.jsx";
-import PropostaEtapa from "./PropostaEtapa.jsx";
 import Demandas from "./Demandas.jsx";
 import LeituraEdital from "./LeituraEdital.jsx";
 import { Entrar, VincularAparelho, TrocarSenha, CampoSenha, LinkConta, prenderAparelho, aparelhoLido, ehInterno } from "./Acesso.jsx";
@@ -322,13 +321,12 @@ const EtapaTag = ({ id }) => <span className="tag" style={{ background: `${etapa
 const ResultadoTag = ({ id }) => { const r = resultado(id); return r ? <span className="tag" style={{ background: `${r.cor}18`, color: r.cor }}>{r.nome}</span> : null; };
 
 // Menu na ordem das etapas do trabalho (14/11/2026):
-// Busca → Acompanhamento → Proposta → Lances → Contratos (itens vencidos) → … → Reequilíbrio
+// Busca → Acompanhamento → Lances → Contratos (itens vencidos) → … → Reequilíbrio
 // (os ids antigos "radar", "processos" e "robo" ficam, para não quebrar links e permissões já dadas)
 const TABS = [
   { id: "inicio", nome: "Início", icon: "home" },
   { id: "radar", nome: "Busca de Editais", icon: "radar" },
   { id: "processos", nome: "Acompanhamento", icon: "folder" },
-  { id: "proposta", nome: "Proposta", icon: "pen", pc: true },
   { id: "robo", nome: "Lances", icon: "bot" },
   { id: "contratos", nome: "Contratos", icon: "file" },
   { id: "demandas", nome: "Compras", icon: "truck" },
@@ -575,7 +573,6 @@ function Painel({ session, papel, acesso, abrirAuraxis, notify }) {
   let tela;
   if (!admin && !eu) tela = <div className="card empty">Carregando…</div>;
   else if (procId && perm("processos")) tela = <Processo key={`${procId}-${abaIni || ""}`} id={procId} abaInicial={abaIni} ctx={ctxDe("processos")} onBack={() => { setProcId(null); setAbaIni(null); carregar(); }} />;
-  else if (tab === "proposta") tela = <PropostaEtapa ctx={ctxDe("proposta")} />;
   else if (tab === "catalogo") tela = <Catalogo ctx={ctxDe("catalogo")} />;
   else if (tab === "reequilibrio") tela = <Reequilibrio ctx={ctxDe("reequilibrio")} />;
   else if (tab === "inicio") tela = <Inicio ctx={ctx} />;
