@@ -25,6 +25,7 @@ import Reequilibrio from "./Reequilibrio.jsx";
 import ContratosLancados from "./ContratosLancados.jsx";
 import Demandas from "./Demandas.jsx";
 import LeituraEdital from "./LeituraEdital.jsx";
+import CustoEstoque from "./CustoEstoque.jsx";
 import { Entrar, VincularAparelho, TrocarSenha, CampoSenha, LinkConta, prenderAparelho, aparelhoLido, ehInterno } from "./Acesso.jsx";
 import PainelAuraxis from "./PainelAuraxis.jsx";
 import Orcamentos from "./Orcamentos.jsx";
@@ -627,7 +628,20 @@ function Inicio({ ctx }) {
   const { procs, naoVistas, abrir, ir, config, email, equipe } = ctx;
   const [movs, setMovs] = useState(null);
   const [radarN, setRadarN] = useState(null);
+  const [vencendo, setVencendo] = useState([]);
   const eu = equipe.find((p) => p.email === email);
+  // Contratos que vencem em até 60 dias (maior vigência dos itens vencidos de cada processo)
+  useEffect(() => {
+    if (!ctx.perm || !ctx.perm("contratos")) return;
+    const hoje = new Date().toISOString().slice(0, 10);
+    sb.from("itens_ganhos").select("processo_id,vigencia_fim,processos(orgao,numero)").gte("vigencia_fim", hoje).limit(5000)
+      .then(({ data }) => {
+        const m = {};
+        (data || []).forEach((g) => { if (!m[g.processo_id] || g.vigencia_fim > m[g.processo_id].fim) m[g.processo_id] = { id: g.processo_id, fim: g.vigencia_fim, p: g.processos || {} }; });
+        const lim = new Date(Date.now() + 60 * 864e5).toISOString().slice(0, 10);
+        setVencendo(Object.values(m).filter((x) => x.fim <= lim).sort((a, b) => (a.fim < b.fim ? -1 : 1)));
+      });
+  }, [procs]);
 
   useEffect(() => {
     sb.from("movimentacoes").select("id,processo_id,titulo,detalhe,fonte,tipo,ocorrido_em,created_at,processos(orgao,numero)")
@@ -655,6 +669,15 @@ function Inicio({ ctx }) {
         <button className="card kpi" style={{ border: 0, textAlign: "left" }} onClick={() => ir("processos")}><small>Processos ativos</small><b className="num">{ativos.length}</b><small>{nvTotal ? `${nvTotal} movimentações importantes novas` : "Nada novo para ver"}</small></button>
         <button className="card kpi" style={{ border: 0, textAlign: "left" }} onClick={() => ir("radar")}><small>Editais novos no radar</small><b className="num">{radarN == null ? "…" : radarN}</b><small>Relevantes e ainda abertos</small></button>
       </div>
+      {vencendo.length > 0 && (
+        <div className="banner warn" style={{ cursor: "pointer" }} role="button" tabIndex={0} onClick={() => { try { sessionStorage.setItem("lp-contratos-sit", "vencendo"); } catch (e) { /* ignora */ } ir("contratos"); }}>
+          <div>
+            <b>⏰ {vencendo.length} {vencendo.length === 1 ? "contrato vence" : "contratos vencem"} em até 60 dias</b>
+            {vencendo.slice(0, 5).map((x) => { const d = Math.ceil((new Date(x.fim + "T23:59:59").getTime() - Date.now()) / 864e5); return <div key={x.id}>{x.p.orgao || "Órgão"}{x.p.numero ? ` · ${x.p.numero}` : ""}: {fmtData(x.fim + "T12:00:00")} ({d} dia(s))</div>; })}
+            {vencendo.length > 5 && <div>e mais {vencendo.length - 5}… (clique para ver em Contratos)</div>}
+          </div>
+        </div>
+      )}
       <div className="grid2">
         <div className="card">
           <div className="card-h"><h2>Próximas disputas</h2><button className="btn ghost sm" onClick={() => ir("agenda")}>Agenda</button></div>
@@ -1206,8 +1229,19 @@ function Contratos({ ctx }) {
   }, [gan]);
 
   const daEmpresa = grupos.filter((c) => emp === "todas" || (emp === "sem" ? !c.p.empresa_id : c.p.empresa_id === emp));
-  const lista = daEmpresa.filter((c) => !q || `${c.p.orgao} ${c.p.municipio} ${c.p.numero} ${c.p.objeto} ${c.ata.join(" ")} ${c.contrato.join(" ")}`.toLowerCase().includes(q.toLowerCase()))
-    .sort((a, b) => ((b.p.data_sessao || "") < (a.p.data_sessao || "") ? -1 : 1));
+  // Situação de cada contrato: vencimento (pela maior vigência dos itens) e o que falta lançar
+  const diasPara = (fim) => (fim ? Math.ceil((new Date(fim + "T23:59:59").getTime() - Date.now()) / 864e5) : null);
+  const SITS = [
+    { id: "todos", nome: "Todos", teste: () => true },
+    { id: "vencendo", nome: "⏰ Vencem em até 60 dias", teste: (c) => { const d = diasPara(c.vigFim); return d != null && d >= 0 && d <= 60; } },
+    { id: "vencidos", nome: "Vencidos", teste: (c) => { const d = diasPara(c.vigFim); return d != null && d < 0; } },
+    { id: "semata", nome: "📝 Sem ata/contrato", teste: (c) => !c.ata.length && !c.contrato.length },
+    { id: "semvig", nome: "📝 Sem vigência", teste: (c) => !c.vigFim },
+  ];
+  const [sit, setSit] = useState(() => { try { const v = sessionStorage.getItem("lp-contratos-sit"); sessionStorage.removeItem("lp-contratos-sit"); return v || "todos"; } catch (e) { return "todos"; } });
+  const sitAtual = SITS.find((s) => s.id === sit) || SITS[0];
+  const lista = daEmpresa.filter((c) => sitAtual.teste(c) && (!q || `${c.p.orgao} ${c.p.municipio} ${c.p.numero} ${c.p.objeto} ${c.ata.join(" ")} ${c.contrato.join(" ")}`.toLowerCase().includes(q.toLowerCase())))
+    .sort((a, b) => sit === "vencendo" || sit === "vencidos" ? (a.vigFim < b.vigFim ? (sit === "vencendo" ? -1 : 1) : (sit === "vencendo" ? 1 : -1)) : ((b.p.data_sessao || "") < (a.p.data_sessao || "") ? -1 : 1));
   const totalGeral = daEmpresa.reduce((a, c) => a + c.total, 0);
   const itensGeral = daEmpresa.reduce((a, c) => a + c.itens.length, 0);
 
@@ -1246,8 +1280,14 @@ function Contratos({ ctx }) {
         <div className="card kpi"><small>Itens vencidos</small><b className="num">{itensGeral}</b><small>Em todos os contratos</small></div>
         <div className="card kpi"><small>Valor total</small><b className="num">{brl(totalGeral)}</b><small>Quantidade × valor unitário</small></div>
       </div>
+      {ctx.perm && ctx.perm("custos") && !ctx.celular && <CustoEstoque ctx={ctx} onLigou={carregarGanhos} />}
+      <div className="seg cats" role="tablist">
+        {SITS.map((s) => { const n = daEmpresa.filter(s.teste).length; return (
+          <button key={s.id} role="tab" aria-selected={sit === s.id} className={sit === s.id ? "on" : ""} onClick={() => setSit(s.id)}>{s.nome}{n ? <span className="cnt">{n}</span> : null}</button>
+        ); })}
+      </div>
       <div className="row-inline" style={{ justifyContent: "space-between" }}>
-        <span className="hint">Clique num contrato para ver os itens, marcas, ata, contrato e vigência.</span>
+        <span className="hint">{sit === "semata" || sit === "semvig" ? "Abra o contrato e preencha nº da ata/contrato e vigência em “Itens ganhos” (vale para todos os itens de uma vez)." : sit === "vencendo" ? "Do que vence primeiro para o último. Vigência = a maior entre os itens (já considera aditivos de prazo)." : "Clique num contrato para ver os itens, marcas, ata, contrato e vigência."}</span>
         <input className="input" style={{ maxWidth: 280 }} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar órgão, número, ata ou objeto" aria-label="Buscar contratos" />
       </div>
       {variasEmpresas && (
@@ -1277,7 +1317,8 @@ function Contratos({ ctx }) {
                   {marcas.length > 0 && <div className="pedido clamp2"><b>Marcas:</b> {marcas.slice(0, 6).join(", ")}{marcas.length > 6 ? "…" : ""}</div>}
                 </div>
                 <div className="estado">
-                  {c.vigFim ? <>Vigência até <b>{fmtData(c.vigFim + "T12:00:00")}</b></> : "Vigência não informada"}
+                  {c.vigFim ? <>Vigência até <b>{fmtData(c.vigFim + "T12:00:00")}</b>{(() => { const d = diasPara(c.vigFim); return d < 0 ? <span className="hint"> · vencida</span> : d <= 60 ? <b style={{ color: "var(--red)" }}> · vence em {d} dia(s)</b> : null; })()}</> : <span style={{ color: "var(--amber)" }}>Vigência não informada</span>}
+                  {!c.ata.length && !c.contrato.length && <div className="hint" style={{ color: "var(--amber)" }}>Ata/contrato não lançado</div>}
                   {c.p.data_sessao && <div className="hint">Sessão {fmtDH(c.p.data_sessao)}</div>}
                 </div>
                 <div className="row-inline"><span className="hint">Responsável: {nomeDe(c.p.responsavel)}</span></div>
@@ -1788,15 +1829,21 @@ function ItensGanhos({ lista, pode, notify, onMudou, unico, abrir, ctx }) {
     (async () => {
       const it = {}, pr = {};
       for (let i = 0; i < ids.length; i += 150) { const { data } = await sb.from("itens").select("id,custo").in("id", ids.slice(i, i + 150)); (data || []).forEach((x) => (it[x.id] = x.custo)); }
-      for (let i = 0; i < pids.length; i += 150) { const { data } = await sb.from("produtos").select("id,custo_atual,custo_em").in("id", pids.slice(i, i + 150)); (data || []).forEach((x) => (pr[x.id] = x)); }
+      for (let i = 0; i < pids.length; i += 150) { const { data } = await sb.from("produtos").select("id,custo_atual,custo_em,estoque_id").in("id", pids.slice(i, i + 150)); (data || []).forEach((x) => (pr[x.id] = x)); }
+      // Custo do estoque (planilha/PDV) quando o produto foi ligado em "💲 Custo pelo estoque"
+      const eids = [...new Set(Object.values(pr).map((x) => x.estoque_id).filter(Boolean))];
+      const est = {};
+      for (let i = 0; i < eids.length; i += 150) { const { data } = await sb.from("produtos").select("id,custo_atual,custo_em,nome").in("id", eids.slice(i, i + 150)); (data || []).forEach((x) => (est[x.id] = x)); }
+      Object.values(pr).forEach((x) => { if (x.estoque_id && est[x.estoque_id]) x.estoque = est[x.estoque_id]; });
       setBase({ itens: it, produtos: pr });
     })();
-  }, [verCusto, lista.length, lista.length && lista[0].id]);
+  }, [verCusto, lista]);
   const custoDe = (g) => {
     if (g.custo_unit != null) return { v: Number(g.custo_unit), de: "digitado" };
     if (g.item_id && base.itens[g.item_id] != null) return { v: Number(base.itens[g.item_id]), de: "da cotação" };
     const p = g.produto_id && base.produtos[g.produto_id];
     if (p && p.custo_atual != null) return { v: Number(p.custo_atual), de: "custo atual do produto" };
+    if (p && p.estoque && p.estoque.custo_atual != null) return { v: Number(p.estoque.custo_atual), de: "do estoque" };
     return null;
   };
   const mkDe = (g) => { const c = custoDe(g); return c && c.v > 0 && g.valor_unitario != null ? ((Number(g.valor_unitario) - c.v) / c.v) * 100 : null; };

@@ -48,6 +48,11 @@ Leia isto primeiro. É a passagem de bastão da conversa no claude.ai para o Cla
   - Tenta no máximo 1 vez por dia (`pncp_checado_em`).
   - O que o PNCP já tinha entra como histórico, sem alarme.
 
+- **Contratos (v37, 24/11/2026):**
+  - **Custo pelo estoque:** o quadro "💲 Custo pelo estoque" (`src/CustoEstoque.jsx`) liga cada produto de licitação dos itens vencidos ao produto equivalente do estoque (planilha/PDV) pela coluna `produtos.estoque_id` (migração `produtos_estoque_id`). Sugere pelas regras de `assinatura.js` (base sem a embalagem); a equipe confere e liga. O `custoDe` de Itens ganhos usa o custo do estoque.
+  - **Filtros:** Todos / Vencem em até 60 dias / Vencidos / Sem ata/contrato / Sem vigência.
+  - **Início:** aviso dos contratos que vencem em até 60 dias, que abre Contratos já filtrado.
+
 ## Contas e login (14/11/2026, pedido do dono: "igual o LojaPro")
 - **Cada empresa cliente é uma conta isolada** (tabela `contas`, código curto, ex.: `mirafarma`). Tudo tem `conta_id`; regra restritiva "so a minha conta" no banco; funções na nuvem filtram por conta (robô pela chave em `contas.robo_hash`; radar roda por conta). A conta `mirafarma` tem só o CNPJ da Mirafarma (tabela `empresas`); outra empresa do mesmo dono seria outra conta.
 - **Login por NOME + senha**: o aparelho guarda a empresa (código digitado uma vez, ou link/QR `#entrar/<codigo>`); por dentro o e-mail é `<nome>.<codigo>@contas.licitapro.invalid` (`src/Acesso.jsx` e função `licita-contas` montam igual). Senha provisória → no 1º acesso a pessoa cria a dela (`equipe.trocar_senha`). Esqueceu: "Nova senha provisória". Ninguém cria conta sozinho.

@@ -2002,3 +2002,10 @@ begin
 end $$;
 revoke execute on function public.juntar_produto_estoque(uuid, uuid) from public, anon;
 grant execute on function public.juntar_produto_estoque(uuid, uuid) to authenticated;
+
+-- Migração produtos_estoque_id (24/11/2026): produto de licitação (itens vencidos) ligado ao produto
+-- equivalente do estoque (planilha/PDV), de onde vem o custo do markup em Contratos (quadro "Custo pelo estoque").
+alter table public.produtos add column if not exists estoque_id uuid references public.produtos(id) on delete set null;
+alter table public.produtos add column if not exists estoque_ligado_em timestamptz;
+alter table public.produtos add column if not exists estoque_ligado_por text;
+create index if not exists produtos_estoque_id_idx on public.produtos(estoque_id);
