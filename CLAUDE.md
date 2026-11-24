@@ -25,6 +25,14 @@ Leia isto primeiro. É a passagem de bastão da conversa no claude.ai para o Cla
 
 - **Proposta em Word (14/11/2026, pedidos 4, 8, 9, 11 e 12 feitos):** aba "📝 Proposta" do processo → `src/PropostaWord.jsx` + `src/propostaWord.js` (fflate, roda no navegador). "PROPOSTA" = itens com `participar` e `preco_unit`; "PROPOSTA AJUSTADA" = `itens_ganhos` (valor final). O layout é o Word da empresa com marcadores `{{...}}`, guardado em `modelos_documentos` (base64, só no banco); dados da empresa/representante em `empresa_proposta.dados`; nº do processo licitatório em `processos.numero_processo`; colunas extras (Anvisa, Observações; desligadas por padrão) em `processos.proposta_opcoes.colunas`. O admin troca modelo e dados na própria aba. Modelo com marcadores local: `modelos/Proposta_modelo_LicitaPro.docx` (fora do git). Linhas copiadas perdem `w14:paraId` (o Word recusa ids repetidos).
 
+- **v32 (24/11/2026):**
+  - **Aba Itens:** só tem "Vamos disputar" e as informações do item.
+  - **Aba Proposta:** concentra a planilha de cotação, a grade de preço/marca/Anvisa, a coluna "🏆 Vencemos" com o valor final (é ela que grava `itens_ganhos` à mão e monta a PROPOSTA AJUSTADA) e o Word. O piso fica só em Lances → Ao vivo.
+  - **Word:** `{{MODALIDADE}}` substitui o "PREGÃO ELETRÔNICO" fixo; fora do pregão sai "AO AGENTE DE CONTRATAÇÃO".
+  - **Dados automáticos:** `processos.numero_processo`, `modalidade` e `srp` vêm do PNCP (`processo`, `modalidadeNome`, `srp`) ou do PCP (`tipoPregao`/`tipoLicitacao`); `numero_processo` também vem da leitura do edital.
+  - **Cadastro:** a função `licita` cadastra e roda a 1ª verificação em segundo plano (`EdgeRuntime.waitUntil`); `favorito: true` já cria em "Vamos participar".
+  - **Acompanhamento:** processos com novidade importante aparecem primeiro em todas as categorias.
+
 ## Contas e login (14/11/2026, pedido do dono: "igual o LojaPro")
 - **Cada empresa cliente é uma conta isolada** (tabela `contas`, código curto, ex.: `mirafarma`). Tudo tem `conta_id`; regra restritiva "so a minha conta" no banco; funções na nuvem filtram por conta (robô pela chave em `contas.robo_hash`; radar roda por conta). Mirafarma e Miramed são CNPJs (tabela `empresas`) dentro da conta `mirafarma`.
 - **Login por NOME + senha**: o aparelho guarda a empresa (código digitado uma vez, ou link/QR `#entrar/<codigo>`); por dentro o e-mail é `<nome>.<codigo>@contas.licitapro.invalid` (`src/Acesso.jsx` e função `licita-contas` montam igual). Senha provisória → no 1º acesso a pessoa cria a dela (`equipe.trocar_senha`). Esqueceu: "Nova senha provisória". Ninguém cria conta sozinho.
