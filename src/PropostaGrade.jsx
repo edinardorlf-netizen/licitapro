@@ -7,10 +7,12 @@
 // =====================================================================
 import React, { useState, useRef } from "react";
 import { sb, brl, num, parseNum, fmtIn, errMsg } from "./util.js";
+import { gerarEBaixar, itensDaAjustada } from "./propostaWord.js";
 
 const c2 = (v) => Math.round(v * 100) / 100;
 
-export default function PropostaGrade({ itens, pode, notify, onSaved, ganhos = [], podeGanhos, onGanho, onMudouGanhos }) {
+export default function PropostaGrade({ p, itens, pode, notify, onSaved, ganhos = [], podeGanhos, onGanho, onMudouGanhos }) {
+  const [baixando, setBaixando] = useState(false);
   const [soMeus, setSoMeus] = useState(() => itens.some((i) => i.participar));
   const [q, setQ] = useState("");
   const [rasc, setRasc] = useState({}); // { [id]: { preco, marca } } enquanto digita
@@ -67,6 +69,18 @@ export default function PropostaGrade({ itens, pode, notify, onSaved, ganhos = [
     onMudouGanhos && onMudouGanhos();
   };
 
+  // PROPOSTA AJUSTADA: só os itens marcados em "🏆 Vencemos", com o valor final
+  const baixarAjustada = async () => {
+    const lista = itensDaAjustada(ganhos, itens);
+    if (lista.some((i) => !(Number(i.vu) > 0))) return notify("Há item vencido sem valor final: preencha antes de baixar.");
+    setBaixando(true);
+    try {
+      const r = await gerarEBaixar({ p, tipo: "ajustada", lista });
+      notify(`Proposta ajustada gerada: ${r.qtd} ${r.qtd === 1 ? "item" : "itens"}, total ${brl(r.total)}. Confira no Word antes de enviar.`);
+    } catch (e) { notify(errMsg(e)); }
+    setBaixando(false);
+  };
+
   // Enter / setas: desce ou sobe na mesma coluna
   const teclas = (e, campo) => {
     if (!["Enter", "ArrowDown", "ArrowUp"].includes(e.key)) return;
@@ -93,17 +107,19 @@ export default function PropostaGrade({ itens, pode, notify, onSaved, ganhos = [
         </div>
       </div>
       <p className="hint" style={{ margin: 0 }}>Lance aqui o <b>valor unitário</b>, a <b>marca</b> e o <b>registro Anvisa</b> de cada item da proposta (ou envie a planilha de cotação preenchida, acima). Grava ao sair do campo; Enter desce para o próximo item. Ao lançar um preço, o item passa a “vamos disputar”. Isto fica só no LicitaPro: o envio da proposta no portal continua sendo feito por vocês.</p>
-      {mostrarGanhos && <p className="hint" style={{ margin: 0 }}><b>Depois da disputa:</b> marque <b>🏆 Vencemos</b> nos itens que a empresa ganhou e confira o <b>valor final</b> (o do último lance ou o negociado). A PROPOSTA AJUSTADA, abaixo, sai só com esses itens. Itens marcados sozinhos pelo portal ou pelo PNCP já vêm marcados.</p>}
+      {mostrarGanhos && <p className="hint" style={{ margin: 0 }}><b>Depois da disputa:</b> marque <b>🏆 Vencemos</b> nos itens que a empresa ganhou e confira o <b>valor final</b> (o do último lance ou o negociado). Depois clique em <b>📥 Proposta ajustada</b> (no alto da coluna): o Word sai só com esses itens. Itens marcados sozinhos pelo portal ou pelo PNCP já vêm marcados.</p>}
       <div className="row-inline" style={{ gap: 14, flexWrap: "wrap" }}>
         <span>Itens com preço: <b>{comPreco.length}</b> de {itens.length}</span>
         <span>Total da proposta: <b>{brl(total)}</b></span>
         {ganhos.length > 0 && <span>🏆 Vencidos: <b>{ganhos.length}</b> · total final <b>{brl(totalGanho)}</b></span>}
+        {p && ganhos.length > 0 && <button type="button" className="btn sm" onClick={baixarAjustada} disabled={baixando}>{baixando ? <span className="spin" /> : null}📥 Baixar PROPOSTA AJUSTADA ({ganhos.length} {ganhos.length === 1 ? "item" : "itens"})</button>}
         {semMarca > 0 && <span style={{ color: "var(--red)" }}>⚠ {semMarca} {semMarca === 1 ? "item" : "itens"} com preço e sem marca</span>}
       </div>
       {!lista.length ? <div className="empty">{soMeus ? "Nenhum item marcado para disputa. Desmarque “Só os que vamos disputar” para ver todos." : "Nenhum item encontrado."}</div> : (
         <div style={{ overflowX: "auto" }} ref={grade}>
           <table className="itab">
-            <thead><tr><th>Item</th><th>Descrição</th><th className="n">Qtd</th><th className="n">Ref. unit.</th><th className="n">Valor unitário</th><th className="n">Valor total</th><th>Marca</th><th>Reg. Anvisa</th>{mostrarGanhos && <th>🏆 Vencemos</th>}{mostrarGanhos && <th className="n">Valor final unit.</th>}<th aria-label="Situação" /></tr></thead>
+            <thead><tr><th>Item</th><th>Descrição</th><th className="n">Qtd</th><th className="n">Ref. unit.</th><th className="n">Valor unitário</th><th className="n">Valor total</th><th>Marca</th><th>Reg. Anvisa</th>{mostrarGanhos && <th style={{ minWidth: 150 }}>🏆 Vencemos
+                {p && ganhos.length > 0 && <div><button type="button" className="btn sm" style={{ marginTop: 4 }} onClick={baixarAjustada} disabled={baixando} title="Baixar a PROPOSTA AJUSTADA em Word com os itens marcados">{baixando ? <span className="spin" /> : "📥"} Proposta ajustada ({ganhos.length})</button></div>}</th>}{mostrarGanhos && <th className="n">Valor final unit.</th>}<th aria-label="Situação" /></tr></thead>
             <tbody>
               {lista.map((it) => {
                 const pv = parseNum(valor(it, "preco"));

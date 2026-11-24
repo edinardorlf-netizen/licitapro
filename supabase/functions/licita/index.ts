@@ -36,6 +36,8 @@ const json = (body: unknown, status = 200) =>
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 class Limite extends Error {}
 let limiteExec = Infinity; // horário-limite da execução atual (as funções têm ~150 s)
+// A partir desta data, nº do processo, modalidade e registro de preços são gravados (do PNCP) nos processos novos.
+const NOVOS_DESDE = "2026-11-24T00:00:00-03:00";
 
 // ---------- Acesso às fontes, com ritmo controlado ----------
 let lastPncp = 0;
@@ -278,6 +280,25 @@ async function verificarProcesso(p: any, opts: { inicial?: boolean } = {}) {
   const add = (m: Omit<Mov, "processo_id" | "historico"> & { historico?: boolean }) =>
     movs.push({ processo_id: p.id, historico: inicial, ...m });
 
+  // Processos cadastrados a partir de 24/11/2026: nº do processo, modalidade e registro de preços vêm do PNCP.
+  // Processo puxado de um portal sem ligação com o PNCP: procura a mesma licitação no radar (que vem do PNCP).
+  const novoParaProposta = !!p.created_at && Date.parse(p.created_at) >= Date.parse(NOVOS_DESDE);
+  // (Só os 3 dados: o resto desse processo continua vindo do portal, para não misturar os itens.)
+  if (novoParaProposta && !p.cnpj && p.pcp_path && (!p.numero_processo || !p.modalidade || p.srp == null)
+    && (!p.pncp_checado_em || Date.now() - Date.parse(p.pncp_checado_em) > 6 * 3600e3)) {
+    upd.pncp_checado_em = new Date().toISOString(); // no máximo a cada 6 h
+    const { data: ed } = await db.from("editais").select("cnpj,ano,seq").eq("conta_id", p.conta_id).ilike("link_origem", `%${p.pcp_path}%`).limit(1);
+    const e = ed && ed[0];
+    if (e && e.cnpj && e.ano && e.seq) {
+      const d = await pncpGet(`/api/consulta/v1/orgaos/${e.cnpj}/compras/${e.ano}/${e.seq}`);
+      if (d) {
+        if (!p.numero_processo && d.processo) upd.numero_processo = String(d.processo).trim();
+        if (d.modalidadeNome) upd.modalidade = d.modalidadeNome;
+        if (typeof d.srp === "boolean") upd.srp = d.srp;
+      }
+    }
+  }
+
   // ---- PNCP ---- (no máximo a cada ~10 min, mesmo quando o portal é conferido a cada 2 min)
   const pncpDevido = inicial || !p.pncp_checado_em || Date.now() - Date.parse(p.pncp_checado_em) > 9 * 60e3;
   if (p.cnpj && p.ano && p.seq && pncpDevido) {
@@ -289,10 +310,13 @@ async function verificarProcesso(p: any, opts: { inicial?: boolean } = {}) {
       upd.valor_homologado = det.valorTotalHomologado;
       upd.valor_estimado = det.valorTotalEstimado;
       if (!p.objeto) upd.objeto = limpaObjeto(det.objetoCompra);
-      // Para a proposta em Word sair pronta: nº do processo licitatório, modalidade e registro de preços
-      if (!p.numero_processo && det.processo) upd.numero_processo = String(det.processo).trim();
-      if (!p.modalidade && det.modalidadeNome) upd.modalidade = det.modalidadeNome;
-      if (typeof det.srp === "boolean" && p.srp !== det.srp) upd.srp = det.srp;
+      // Para a proposta em Word sair pronta: nº do processo licitatório, modalidade e registro de preços,
+      // sempre do PNCP (os portais só dão notificações) e só nos processos novos (os antigos ficam como estão).
+      if (novoParaProposta) {
+        if (!p.numero_processo && det.processo) upd.numero_processo = String(det.processo).trim();
+        if (det.modalidadeNome && p.modalidade !== det.modalidadeNome) upd.modalidade = det.modalidadeNome;
+        if (typeof det.srp === "boolean" && p.srp !== det.srp) upd.srp = det.srp;
+      }
       if (!p.link_origem && det.linkSistemaOrigem) upd.link_origem = det.linkSistemaOrigem;
       if (!p.pcp_path) {
         const path = pcpPathDe(det.linkSistemaOrigem);
@@ -397,13 +421,6 @@ async function verificarProcesso(p: any, opts: { inicial?: boolean } = {}) {
       }
       upd.situacao_portal = status;
       if (proc.dataHoraAbertura) upd.data_sessao = proc.dataHoraAbertura;
-      // Modalidade e registro de preços (para a proposta em Word); o PNCP, quando houver, manda na modalidade
-      const tipoPcp = `${proc.tipoPregao || ""} ${proc.tipoLicitacao || ""}`;
-      if (!p.modalidade && !upd.modalidade && tipoPcp.trim()) {
-        const mod = /preg/i.test(tipoPcp) ? "Pregão - Eletrônico" : /dispensa/i.test(tipoPcp) ? "Dispensa - Eletrônica" : /concorr/i.test(tipoPcp) ? "Concorrência - Eletrônica" : /credenc/i.test(tipoPcp) ? "Credenciamento" : null;
-        if (mod) upd.modalidade = mod;
-      }
-      if (p.srp == null && upd.srp == null && tipoPcp.trim()) upd.srp = /registro de pre/i.test(tipoPcp);
       upd.prazo_impugnacao = proc.dataHoraLimiteImpugnacoes || null;
       upd.prazo_esclarecimento = proc.dataHoraLimiteEsclarecimentos || proc.dataHoraLimiteEsclarecimento || null;
       if ((!p.orgao || inicial) && proc.razaoSocialComprador) upd.orgao = proc.razaoSocialComprador;

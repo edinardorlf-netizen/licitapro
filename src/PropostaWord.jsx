@@ -140,12 +140,9 @@ export default function PropostaWord({ p, itens, ganhos, ctx, salvar }) {
         <button type="button" className="btn" onClick={() => gerar("inicial")} disabled={!!busy || !modeloInfo || !cotados.length}>
           {busy === "inicial" ? <span className="spin" /> : null}📄 Gerar PROPOSTA ({cotados.length} {cotados.length === 1 ? "item" : "itens"} · {brl(totCot)})
         </button>
-        <button type="button" className="btn" onClick={() => gerar("ajustada")} disabled={!!busy || !modeloInfo || !vencidos.length}>
-          {busy === "ajustada" ? <span className="spin" /> : null}🏆 Gerar PROPOSTA AJUSTADA ({vencidos.length} {vencidos.length === 1 ? "vencido" : "vencidos"} · {brl(totVenc)})
-        </button>
       </div>
       <p className="hint" style={{ margin: 0 }}>
-        A <b>PROPOSTA</b> leva todos os itens com valor unitário lançado (aba abaixo ou planilha de cotação). A <b>PROPOSTA AJUSTADA</b> leva só os itens vencidos, com o valor final da disputa.
+        A <b>PROPOSTA</b> leva todos os itens com valor unitário lançado (grade acima ou planilha de cotação). A <b>PROPOSTA AJUSTADA</b> se baixa na grade acima, na coluna <b>🏆 Vencemos</b>: só os itens marcados, com o valor final.
         O arquivo sai em Word, editável: confira antes de assinar e enviar no portal.
       </p>
       {(semMarca(cotados) > 0 || semMarca(vencidos) > 0 || semValor > 0) && (

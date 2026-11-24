@@ -286,3 +286,14 @@ export function baixarDocx(bytes, nome) {
   a.click();
   setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1500);
 }
+
+// Gera e baixa a proposta de um processo (usado na aba Proposta: botão da PROPOSTA e coluna "🏆 Vencemos").
+export async function gerarEBaixar({ p, tipo, lista }) {
+  if (!p.empresa_id) throw new Error("Escolha a empresa do processo antes de gerar a proposta.");
+  if (!lista.length) throw new Error(tipo === "ajustada" ? "Marque em “🏆 Vencemos” os itens que a empresa ganhou." : "Nenhum item com valor unitário: lance os preços ou envie a planilha de cotação.");
+  const [modelo, emp] = await Promise.all([carregarModelo(p.empresa_id), carregarDadosEmpresa(p.empresa_id).catch(() => ({}))]);
+  const opcoes = (p.proposta_opcoes && p.proposta_opcoes.colunas) || {};
+  const r = montarProposta({ modelo, emp: emp || {}, tipo, campos: camposPadrao(p, emp || {}), itens: lista, opcoes });
+  baixarDocx(r.bytes, nomeArquivoProposta(p, tipo));
+  return r;
+}

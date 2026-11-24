@@ -1742,7 +1742,8 @@ function Processo({ id, ctx, onBack, abaInicial }) {
             <h2>Itens</h2>
             <label className="toggle"><input type="checkbox" checked={soMeus} onChange={(e) => setSoMeus(e.target.checked)} />Só os que vamos disputar</label>
           </div>
-          <p className="hint" style={{ marginBottom: 12 }}>Marque os itens que a empresa vai disputar. Preço, marca, Anvisa, planilha de cotação e itens vencidos ficam na aba{!ctx.celular && itens.length > 0 ? <> <button type="button" className="linkbtn" onClick={() => setAba("proposta")}>📝 Proposta</button></> : " Proposta"}; o valor mínimo (piso) é digitado em Lances, quando o processo entra em disputa.</p>
+          <p className="hint" style={{ marginBottom: 12 }}>Marque os itens que a empresa vai disputar e baixe a planilha de cotação com eles. A planilha preenchida, preço, marca, Anvisa e itens vencidos ficam na aba{!ctx.celular && itens.length > 0 ? <> <button type="button" className="linkbtn" onClick={() => setAba("proposta")}>📝 Proposta</button></> : " Proposta"}; o valor mínimo (piso) é digitado em Lances, quando o processo entra em disputa.</p>
+          {!ctx.celular && itens.length > 0 && <CotacaoPainel p={p} itens={itens} pode={podeProp} notify={notify} onMudou={carregar} modo="baixar" />}
           {!itens.length ? <div className="empty">Os itens aparecem aqui depois da primeira verificação.</div> : (
             <div className="stack" style={{ gap: 10 }}>
               {(soMeus ? meus : itens).map((it) => <Item key={it.id} it={it} pode={podeProp} notify={notify} ganho={ganhos.find((g) => g.numero === it.numero)} onSaved={(n) => setItens((l) => l.map((x) => (x.id === n.id ? n : x)))} />)}
@@ -1753,8 +1754,8 @@ function Processo({ id, ctx, onBack, abaInicial }) {
       )}
 
       {aba === "edital" && <LeituraEdital p={p} pode={podeProp} notify={notify} salvar={salvar} />}
-      {aba === "proposta" && !ctx.celular && itens.length > 0 && <CotacaoPainel p={p} itens={itens} pode={podeProp} notify={notify} onMudou={carregar} onProposta={() => { const el = document.getElementById("proposta-word"); if (el) el.scrollIntoView({ behavior: "smooth" }); }} />}
-      {aba === "proposta" && !ctx.celular && itens.length > 0 && <PropostaGrade itens={itens} pode={podeProp} podeGanhos={podeGanhos} ganhos={ganhos} onGanho={marcarGanho} notify={notify} onSaved={(n) => setItens((l) => l.map((x) => (x.id === n.id ? n : x)))} onMudouGanhos={carregar} />}
+      {aba === "proposta" && !ctx.celular && itens.length > 0 && <CotacaoPainel p={p} itens={itens} pode={podeProp} notify={notify} onMudou={carregar} modo="enviar" onProposta={() => { const el = document.getElementById("proposta-word"); if (el) el.scrollIntoView({ behavior: "smooth" }); }} />}
+      {aba === "proposta" && !ctx.celular && itens.length > 0 && <PropostaGrade p={p} itens={itens} pode={podeProp} podeGanhos={podeGanhos} ganhos={ganhos} onGanho={marcarGanho} notify={notify} onSaved={(n) => setItens((l) => l.map((x) => (x.id === n.id ? n : x)))} onMudouGanhos={carregar} />}
       {aba === "proposta" && !ctx.celular && <div id="proposta-word"><PropostaWord p={p} itens={itens} ganhos={ganhos} ctx={ctxProp} salvar={salvar} /></div>}
 
       {aba === "ganhos" && podeProp && ganhos.length > 0 && (
