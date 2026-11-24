@@ -10,6 +10,10 @@ import React, { useState, useEffect, useMemo } from "react";
 import { sb, brl, errMsg, fmtData } from "./util.js";
 import { todas } from "./dados.js";
 import { caracteristicas, sobreposicao } from "./assinatura.js";
+import { conflito } from "./LigarProdutos.jsx";
+
+// Quanto das palavras do produto vencido aparece no nome do estoque (0 a 1)
+const cobertura = (a, b) => { if (!a.size) return 0; let n = 0; a.forEach((x) => b.has(x) && n++); return n / a.size; };
 
 // A embalagem (caixa, pacote) fica fora da comparação: o estoque mistura unidade e caixa.
 const semEmb = (base) => (base.startsWith("M|") ? base.split("|").slice(0, -1).join("|") : base);
@@ -67,17 +71,19 @@ export default function CustoEstoque({ ctx, onLigou }) {
     return dados.lic.map((p) => {
       const c = caracteristicas(p.nome, p.unidade);
       const tok = new Set(c.tokens);
+      // Sem conflito (material, tipo, cor, teor, medida, forma…: as mesmas regras da unificação de produtos)
       const cands = (idx.get(semEmb(c.base)) || [])
-        .filter((e) => !(c.forma && e.c.forma && c.forma !== e.c.forma) && !(c.vol && e.c.vol && c.vol !== e.c.vol))
-        .map((e) => ({ ...e, sim: sobreposicao(tok, e.tok) }))
-        .sort((a, b) => b.sim - a.sim || Date.parse(b.custo_em || 0) - Date.parse(a.custo_em || 0));
+        .filter((e) => !conflito({ c }, { c: e.c }).length)
+        .map((e) => ({ ...e, sim: sobreposicao(tok, e.tok), cob: cobertura(tok, e.tok) }))
+        .filter((e) => e.cob >= 0.5)
+        .sort((a, b) => b.cob - a.cob || b.sim - a.sim || Date.parse(b.custo_em || 0) - Date.parse(a.custo_em || 0));
       const ligado = p.estoque_id ? porId.get(p.estoque_id) : null;
       const melhor = cands[0];
       const custos = [...new Set(cands.map((x) => Number(x.custo_atual).toFixed(2)))];
       const vuMedio = p.vu.length ? p.vu.reduce((a, b) => a + b, 0) / p.vu.length : null;
       const custoFora = melhor && vuMedio ? Number(melhor.custo_atual) > vuMedio * 1.5 || Number(melhor.custo_atual) < vuMedio / 6 : false;
       const unidDif = melhor && UNID(p.unidade) !== UNID(melhor.unidade);
-      const nivel = ligado ? "ligado" : !melhor ? "sem" : melhor.sim >= 0.6 && !custoFora && !unidDif ? "certeza" : "provavel";
+      const nivel = ligado ? "ligado" : !melhor ? "sem" : melhor.cob >= 0.8 && !custoFora && !unidDif ? "certeza" : "provavel";
       return { p, c, cands, ligado, melhor, custos, vuMedio, custoFora, unidDif, nivel };
     });
   }, [dados]);
@@ -132,7 +138,7 @@ export default function CustoEstoque({ ctx, onLigou }) {
             <input className="input" style={{ maxWidth: 240 }} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Filtrar produto" aria-label="Filtrar produtos" />
           </div>
           <p className="hint" style={{ margin: 0 }}>
-            {filtro === "certeza" && "Mesmo produto, nomes parecidos, mesma unidade e custo coerente com o preço vendido. Já vêm marcados."}
+            {filtro === "certeza" && "Mesmo produto pela regra, sem conflito (material, tipo, teor, medida), com quase todas as palavras do produto vencido no nome do estoque, mesma unidade e custo coerente com o preço vendido. Já vêm marcados; confira mesmo assim."}
             {filtro === "provavel" && "Mesmo produto pela regra, mas com nome diferente, unidade diferente (ex.: caixa × unidade) ou custo fora do esperado. Confira um a um."}
             {filtro === "sem" && "Nenhum produto do estoque com o mesmo princípio ativo/dose ou nome/medidas. Esses ficam sem custo até entrarem no estoque."}
             {filtro === "ligado" && "Já ligados: o custo do estoque é usado nos itens vencidos. Dá para desfazer."}
