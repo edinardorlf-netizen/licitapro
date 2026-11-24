@@ -32,6 +32,12 @@ Leia isto primeiro. É a passagem de bastão da conversa no claude.ai para o Cla
   - **Dados automáticos:** `processos.numero_processo`, `modalidade` e `srp` vêm do PNCP (`processo`, `modalidadeNome`, `srp`) ou do PCP (`tipoPregao`/`tipoLicitacao`); `numero_processo` também vem da leitura do edital.
   - **Cadastro:** a função `licita` cadastra e roda a 1ª verificação em segundo plano (`EdgeRuntime.waitUntil`); `favorito: true` já cria em "Vamos participar".
   - **Acompanhamento:** processos com novidade importante aparecem primeiro em todas as categorias.
+- **v33 (24/11/2026, decisão do dono):**
+  - **Fonte de dados:** informação adicional vem **sempre do PNCP**. Os portais (PCP) servem só para notificações (chat, situação, lances) quando sincronizados.
+  - **Só processos novos:** nº do processo, modalidade e SRP são gravados apenas em processos criados a partir de 24/11/2026 (`NOVOS_DESDE` na `licita`). Os antigos e finalizados (só contratos) não são mexidos.
+  - **Processo do PCP sem CNPJ:** procura o edital do radar pelo `pcp_path` e consulta o PNCP só para esses 3 dados.
+  - **Planilha de cotação:** baixar fica em Itens (`CotacaoPainel modo="baixar"`); enviar preenchida fica em Proposta (`modo="enviar"`).
+  - **Proposta ajustada:** o botão fica na coluna 🏆 Vencemos da grade (`gerarEBaixar` em `propostaWord.js`).
 
 ## Contas e login (14/11/2026, pedido do dono: "igual o LojaPro")
 - **Cada empresa cliente é uma conta isolada** (tabela `contas`, código curto, ex.: `mirafarma`). Tudo tem `conta_id`; regra restritiva "so a minha conta" no banco; funções na nuvem filtram por conta (robô pela chave em `contas.robo_hash`; radar roda por conta). Mirafarma e Miramed são CNPJs (tabela `empresas`) dentro da conta `mirafarma`.
