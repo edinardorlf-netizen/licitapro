@@ -14,6 +14,26 @@ import { conflito } from "./LigarProdutos.jsx";
 
 // Quanto das palavras do produto vencido aparece no nome do estoque (0 a 1)
 const cobertura = (a, b) => { if (!a.size) return 0; let n = 0; a.forEach((x) => b.has(x) && n++); return n / a.size; };
+// Tipos que não se misturam: se um nome tem uma palavra do grupo e o outro tem outra do mesmo grupo, não é o mesmo produto
+const OPOSTOS = [
+  ["TOPICO", "DEGERMANTE", "ALCOOLICA", "AQUOSA", "BUCAL"],
+  ["GEL", "POMADA", "CREME", "SPRAY", "AMP", "AMPOLA", "INJ", "INJETAVEL", "COMPRIMIDO", "CPR", "XAROPE", "GOTAS", "SUSPENSAO"],
+  ["NYLON", "SEDA", "CATGUT", "POLIGLICOLICO", "POLIPROPILENO", "ALGODAO"],
+  ["NASAL", "INTRAVENOSO", "VESICAL", "URETRAL", "GASTRICA"],
+  ["ESTERIL", "N ESTERIL", "NAO ESTERIL"],
+  ["LASER", "CLINICO", "INFRAVERMELHO"],
+  ["LATEX", "NITRILICA", "VINIL", "PLASTICA"],
+];
+const palavras = (s) => ` ${String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toUpperCase().replace(/[^A-Z0-9]+/g, " ").trim()} `;
+function opostos(a, b) {
+  const A = palavras(a), B = palavras(b);
+  return OPOSTOS.some((g) => {
+    const ta = g.filter((w) => A.includes(` ${w} `)), tb = g.filter((w) => B.includes(` ${w} `));
+    return ta.length && tb.length && !ta.some((w) => tb.includes(w));
+  });
+}
+// O estoque é mais específico que o item vencido (tem número, tamanho ou medida que o item não tem): só "conferir"
+const maisEspecifico = (c, e) => (!c.cal && !!e.cal) || (!c.tam && !!e.tam) || (!(c.dims || []).length && (e.dims || []).length > 0) || (!(c.vols || []).length && (e.vols || []).length > 0);
 
 // A embalagem (caixa, pacote) fica fora da comparação: o estoque mistura unidade e caixa.
 const semEmb = (base) => (base.startsWith("M|") ? base.split("|").slice(0, -1).join("|") : base);
@@ -73,7 +93,7 @@ export default function CustoEstoque({ ctx, onLigou }) {
       const tok = new Set(c.tokens);
       // Sem conflito (material, tipo, cor, teor, medida, forma…: as mesmas regras da unificação de produtos)
       const cands = (idx.get(semEmb(c.base)) || [])
-        .filter((e) => !conflito({ c }, { c: e.c }).length)
+        .filter((e) => !conflito({ c }, { c: e.c }).length && !opostos(p.nome, e.nome))
         .map((e) => ({ ...e, sim: sobreposicao(tok, e.tok), cob: cobertura(tok, e.tok) }))
         .filter((e) => e.cob >= 0.5)
         .sort((a, b) => b.cob - a.cob || b.sim - a.sim || Date.parse(b.custo_em || 0) - Date.parse(a.custo_em || 0));
@@ -83,8 +103,9 @@ export default function CustoEstoque({ ctx, onLigou }) {
       const vuMedio = p.vu.length ? p.vu.reduce((a, b) => a + b, 0) / p.vu.length : null;
       const custoFora = melhor && vuMedio ? Number(melhor.custo_atual) > vuMedio * 1.5 || Number(melhor.custo_atual) < vuMedio / 6 : false;
       const unidDif = melhor && UNID(p.unidade) !== UNID(melhor.unidade);
-      const nivel = ligado ? "ligado" : !melhor ? "sem" : melhor.cob >= 0.8 && !custoFora && !unidDif ? "certeza" : "provavel";
-      return { p, c, cands, ligado, melhor, custos, vuMedio, custoFora, unidDif, nivel };
+      const generico = melhor ? maisEspecifico(c, melhor.c) : false;
+      const nivel = ligado ? "ligado" : !melhor ? "sem" : melhor.cob >= 0.8 && !custoFora && !unidDif && !generico ? "certeza" : "provavel";
+      return { p, c, cands, ligado, melhor, custos, vuMedio, custoFora, unidDif, generico, nivel };
     });
   }, [dados]);
 
@@ -169,6 +190,7 @@ export default function CustoEstoque({ ctx, onLigou }) {
                       <td className="hint" style={{ minWidth: 160 }}>
                         {l.unidDif && <div style={{ color: "var(--amber)" }}>Unidade diferente ({l.p.unidade || "?"} × {l.melhor.unidade}): confira se o custo é por unidade.</div>}
                         {l.custoFora && <div style={{ color: "var(--amber)" }}>Custo muito diferente do preço vendido.</div>}
+                        {l.generico && filtro !== "ligado" && <div style={{ color: "var(--amber)" }}>O item vencido não diz número/tamanho/medida; o do estoque diz. Confira se é o mesmo.</div>}
                         {l.custos.length > 1 && filtro !== "ligado" && <div>{l.cands.length} opções no estoque ({l.custos.length} custos diferentes)</div>}
                         {filtro === "ligado" && pode && <button type="button" className="linkbtn" style={{ fontSize: 12 }} onClick={() => desligar(l)}>Desfazer</button>}
                       </td>
