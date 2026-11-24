@@ -8,11 +8,58 @@
 import React, { useState, useRef } from "react";
 import { sb, brl, num, parseNum, fmtIn, errMsg } from "./util.js";
 import { gerarEBaixar, itensDaAjustada } from "./propostaWord.js";
+import { lerVencedores, ehNossa, marcaProvavel } from "./vencedores.js";
 
 const c2 = (v) => Math.round(v * 100) / 100;
 
-export default function PropostaGrade({ p, itens, pode, notify, onSaved, ganhos = [], podeGanhos, onGanho, onMudouGanhos }) {
+export default function PropostaGrade({ p, itens, pode, notify, onSaved, ganhos = [], podeGanhos, onGanho, onMudouGanhos, empresas = [] }) {
   const [baixando, setBaixando] = useState(false);
+  // Relatório "Vencedores" do PCP (PDF): lê, mostra o que é nosso e marca em "🏆 Vencemos" depois da revisão
+  const [venc, setVenc] = useState(null); // { arquivo, linhas: [...], outros, avisos }
+  const [lendoVenc, setLendoVenc] = useState("");
+  const inpVenc = useRef(null);
+  const lerRelatorio = async (ev) => {
+    const arq = ev.target.files && ev.target.files[0];
+    ev.target.value = "";
+    if (!arq) return;
+    setLendoVenc("ler");
+    try {
+      const buf = new Blob([await arq.arrayBuffer()], { type: "application/octet-stream" });
+      const { data, error } = await sb.functions.invoke("licita-edital", { body: buf, headers: { "Content-Type": "application/octet-stream" } });
+      if (error) { let msg = error.message; try { const j = await error.context.json(); if (j && j.erro) msg = j.erro; } catch (e2) { /* ignora */ } throw new Error(msg); }
+      if (data && data.erro) throw new Error(data.erro);
+      const { fornecedores } = lerVencedores(data.texto);
+      if (!fornecedores.length) throw new Error("Não reconheci este PDF como o relatório “Vencedores” do Portal de Compras Públicas.");
+      const nossas = (p && p.empresa_id ? empresas.filter((e) => e.id === p.empresa_id) : []);
+      const base = nossas.length ? nossas : empresas;
+      const nosso = fornecedores.filter((f) => ehNossa(f, base));
+      const linhas = nosso.flatMap((f) => f.itens.map((a) => {
+        const it = itens.find((x) => Number(x.numero) === a.numero);
+        const g = ganhoDe(it || { numero: a.numero });
+        return { ...a, fornecedor: f.nome, it, ja: g, usar: !!it, marca: marcaProvavel(a, it), vuTxt: fmtIn(a.vu) };
+      }));
+      setVenc({ arquivo: arq.name, linhas, outros: fornecedores.length - nosso.length, total: fornecedores.reduce((s, f) => s + f.itens.length, 0) });
+    } catch (e) { notify(errMsg(e)); }
+    setLendoVenc("");
+  };
+  const gravarVencedores = async () => {
+    const sel = venc.linhas.filter((l) => l.usar && l.it);
+    if (sel.some((l) => !(parseNum(l.vuTxt) > 0))) return notify("Há item marcado sem valor unitário.");
+    setLendoVenc("gravar");
+    const linhas = sel.map((l) => ({
+      processo_id: p.id, item_id: l.it.id, empresa_id: p.empresa_id || null, numero: l.numero,
+      descricao: l.it.descricao, unidade: l.it.unidade || l.unidade, quantidade: l.quantidade ?? l.it.quantidade,
+      valor_unitario: parseNum(l.vuTxt), marca: (l.marca || "").trim() || null, origem: "relatorio",
+      obs: `Relatório Vencedores do PCP (${venc.arquivo})`,
+    }));
+    const { error } = await sb.from("itens_ganhos").upsert(linhas, { onConflict: "processo_id,numero" });
+    setLendoVenc("");
+    if (error) return notify(errMsg(error));
+    notify(`🏆 ${linhas.length} ${linhas.length === 1 ? "item marcado" : "itens marcados"} em “Vencemos” pelo relatório. Confira e baixe a proposta ajustada.`);
+    setVenc(null);
+    onMudouGanhos && onMudouGanhos();
+  };
+  const mudaVenc = (i, patch) => setVenc((v) => ({ ...v, linhas: v.linhas.map((l, k) => (k === i ? { ...l, ...patch } : l)) }));
   const [soMeus, setSoMeus] = useState(() => itens.some((i) => i.participar));
   const [q, setQ] = useState("");
   const [rasc, setRasc] = useState({}); // { [id]: { preco, marca } } enquanto digita
@@ -115,6 +162,50 @@ export default function PropostaGrade({ p, itens, pode, notify, onSaved, ganhos 
         {p && ganhos.length > 0 && <button type="button" className="btn sm" onClick={baixarAjustada} disabled={baixando}>{baixando ? <span className="spin" /> : null}📥 Baixar PROPOSTA AJUSTADA ({ganhos.length} {ganhos.length === 1 ? "item" : "itens"})</button>}
         {semMarca > 0 && <span style={{ color: "var(--red)" }}>⚠ {semMarca} {semMarca === 1 ? "item" : "itens"} com preço e sem marca</span>}
       </div>
+      {p && podeGanhos && (
+        <div className="stack" style={{ gap: 8, padding: 12, border: "1px solid var(--line-2)", borderRadius: 12 }}>
+          <div className="row-inline" style={{ gap: 10, flexWrap: "wrap" }}>
+            <b>🏆 Relatório “Vencedores” do PCP</b>
+            <button type="button" className="btn sm" onClick={() => inpVenc.current && inpVenc.current.click()} disabled={!!lendoVenc}>{lendoVenc === "ler" ? <span className="spin" /> : null}📄 Ler relatório Vencedores (PDF)</button>
+            <input ref={inpVenc} type="file" accept=".pdf,application/pdf" style={{ display: "none" }} onChange={lerRelatorio} />
+          </div>
+          <p className="hint" style={{ margin: 0 }}>No PCP, logado: Sessão Pública → <b>Atas</b> (à direita) → <b>Vencedores</b> → baixar. Envie o PDF aqui: o app acha a nossa empresa, mostra os itens que vencemos com quantidade, valor e marca, e depois de você conferir marca em “🏆 Vencemos”.</p>
+          {venc && (
+            <div className="stack" style={{ gap: 8 }}>
+              <div className="row-inline" style={{ gap: 12, flexWrap: "wrap" }}>
+                <span>Arquivo: <b>{venc.arquivo}</b></span>
+                <span>{venc.total} itens de {venc.outros + (venc.linhas.length ? 1 : 0)} fornecedores no relatório</span>
+                <span style={{ color: venc.linhas.length ? "var(--green)" : "var(--red)" }}>{venc.linhas.length ? `Nossa empresa venceu ${venc.linhas.length} ${venc.linhas.length === 1 ? "item" : "itens"}` : "Nossa empresa não aparece como vencedora neste relatório"}</span>
+              </div>
+              {venc.linhas.length > 0 && (
+                <div style={{ overflowX: "auto" }}>
+                  <table className="itab">
+                    <thead><tr><th aria-label="Marcar" /><th>Item</th><th>Descrição</th><th className="n">Qtd</th><th className="n">Valor unit.</th><th className="n">Total</th><th>Marca</th><th>Situação</th></tr></thead>
+                    <tbody>
+                      {venc.linhas.map((l, i) => (
+                        <tr key={`${l.numero}-${i}`} style={!l.it ? { opacity: 0.6 } : null}>
+                          <td><input type="checkbox" checked={l.usar} disabled={!l.it} onChange={(e) => mudaVenc(i, { usar: e.target.checked })} aria-label={`Marcar item ${l.numero}`} /></td>
+                          <td>{l.numero}</td>
+                          <td style={{ minWidth: 220 }}><div className="clamp3">{l.it ? l.it.descricao : l.texto}</div></td>
+                          <td className="n">{num(l.quantidade)} <span className="hint">{l.unidade}</span></td>
+                          <td className="n"><input className="input num mini" style={{ width: 100 }} value={l.vuTxt} onChange={(e) => mudaVenc(i, { vuTxt: e.target.value })} aria-label={`Valor unitário do item ${l.numero}`} /></td>
+                          <td className="n">{brl(l.vt)}</td>
+                          <td><input className="input mini" style={{ width: 130 }} value={l.marca || ""} onChange={(e) => mudaVenc(i, { marca: e.target.value })} aria-label={`Marca do item ${l.numero}`} /></td>
+                          <td className="hint">{!l.it ? "item não existe neste processo" : l.ja ? `já em Vencemos${l.ja.valor_unitario != null ? ` (${brl(l.ja.valor_unitario)})` : ""}: será atualizado` : "novo"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+              <div className="row-inline">
+                {venc.linhas.some((l) => l.usar) && <button type="button" className="btn sm" onClick={gravarVencedores} disabled={!!lendoVenc}>{lendoVenc === "gravar" ? <span className="spin" /> : null}Marcar em “Vencemos” ({venc.linhas.filter((l) => l.usar).length})</button>}
+                <button type="button" className="btn ghost sm" onClick={() => setVenc(null)} disabled={!!lendoVenc}>Fechar</button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
       {!lista.length ? <div className="empty">{soMeus ? "Nenhum item marcado para disputa. Desmarque “Só os que vamos disputar” para ver todos." : "Nenhum item encontrado."}</div> : (
         <div style={{ overflowX: "auto" }} ref={grade}>
           <table className="itab">
@@ -149,7 +240,7 @@ export default function PropostaGrade({ p, itens, pode, notify, onSaved, ganhos 
                       onBlur={() => salvar(it, "anvisa")} onKeyDown={(e) => teclas(e, "anvisa")} aria-label={`Registro Anvisa do item ${it.numero}`} /> : it.anvisa || "—"}</td>
                     {mostrarGanhos && (
                       <td style={{ textAlign: "center" }}>
-                        <input type="checkbox" checked={!!g} disabled={!podeGanhos || (g && g.origem !== "manual")}
+                        <input type="checkbox" checked={!!g} disabled={!podeGanhos || (g && !["manual", "relatorio"].includes(g.origem))}
                           title={g && g.origem !== "manual" ? "Marcado pelo portal/PNCP" : "Vencemos este item"}
                           onChange={(e) => onGanho && onGanho(it, e.target.checked)} aria-label={`Vencemos o item ${it.numero}`} />
                       </td>

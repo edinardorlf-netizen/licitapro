@@ -38,6 +38,10 @@ Leia isto primeiro. É a passagem de bastão da conversa no claude.ai para o Cla
   - **Processo do PCP sem CNPJ:** procura o edital do radar pelo `pcp_path` e consulta o PNCP só para esses 3 dados.
   - **Planilha de cotação:** baixar fica em Itens (`CotacaoPainel modo="baixar"`); enviar preenchida fica em Proposta (`modo="enviar"`).
   - **Proposta ajustada:** o botão fica na coluna 🏆 Vencemos da grade (`gerarEBaixar` em `propostaWord.js`).
+- **v34–35 (24/11/2026):**
+  - **Fim do processo:** "Encaminhado para adjudicação / homologação" já conta como finalizado; a categoria "Em finalização" saiu.
+  - **Relatório Vencedores:** na aba Proposta, "📄 Ler relatório Vencedores (PDF)" lê o PDF do PCP (Sessão Pública → Atas → Vencedores, baixado logado). O texto vem da `licita-edital`; o leitor está em `src/vencedores.js`. Depois da revisão, grava em `itens_ganhos` com `origem='relatorio'`.
+  - **Sem leitura automática:** o relatório exige sessão logada, e por isso não é lido sozinho; só com autorização da ECUSTOMIZE.
 
 ## Contas e login (14/11/2026, pedido do dono: "igual o LojaPro")
 - **Cada empresa cliente é uma conta isolada** (tabela `contas`, código curto, ex.: `mirafarma`). Tudo tem `conta_id`; regra restritiva "so a minha conta" no banco; funções na nuvem filtram por conta (robô pela chave em `contas.robo_hash`; radar roda por conta). Mirafarma e Miramed são CNPJs (tabela `empresas`) dentro da conta `mirafarma`.

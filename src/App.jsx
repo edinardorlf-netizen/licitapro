@@ -1755,7 +1755,7 @@ function Processo({ id, ctx, onBack, abaInicial }) {
 
       {aba === "edital" && <LeituraEdital p={p} pode={podeProp} notify={notify} salvar={salvar} />}
       {aba === "proposta" && !ctx.celular && itens.length > 0 && <CotacaoPainel p={p} itens={itens} pode={podeProp} notify={notify} onMudou={carregar} modo="enviar" onProposta={() => { const el = document.getElementById("proposta-word"); if (el) el.scrollIntoView({ behavior: "smooth" }); }} />}
-      {aba === "proposta" && !ctx.celular && itens.length > 0 && <PropostaGrade p={p} itens={itens} pode={podeProp} podeGanhos={podeGanhos} ganhos={ganhos} onGanho={marcarGanho} notify={notify} onSaved={(n) => setItens((l) => l.map((x) => (x.id === n.id ? n : x)))} onMudouGanhos={carregar} />}
+      {aba === "proposta" && !ctx.celular && itens.length > 0 && <PropostaGrade p={p} empresas={ctx.empresas} itens={itens} pode={podeProp} podeGanhos={podeGanhos} ganhos={ganhos} onGanho={marcarGanho} notify={notify} onSaved={(n) => setItens((l) => l.map((x) => (x.id === n.id ? n : x)))} onMudouGanhos={carregar} />}
       {aba === "proposta" && !ctx.celular && <div id="proposta-word"><PropostaWord p={p} itens={itens} ganhos={ganhos} ctx={ctxProp} salvar={salvar} /></div>}
 
       {aba === "ganhos" && podeProp && ganhos.length > 0 && (
@@ -1882,7 +1882,7 @@ function ItensGanhos({ lista, pode, notify, onMudou, unico, abrir, ctx }) {
               {filtrada.map((g) => (
                 <tr key={g.id}>
                   {!unico && <td style={{ minWidth: 170 }}>{g.processos ? <button type="button" className="linkbtn" style={{ fontSize: 12.5, textAlign: "left" }} onClick={() => abrir && abrir(g.processo_id)}>{g.processos.orgao}{g.processos.numero ? ` · ${g.processos.numero}` : ""}</button> : "—"}</td>}
-                  <td>{g.numero}{g.origem === "manual" ? <div className="hint">manual</div> : null}</td>
+                  <td>{g.numero}{g.origem === "manual" ? <div className="hint">manual</div> : g.origem === "relatorio" ? <div className="hint">relatório PCP</div> : null}</td>
                   <td style={{ minWidth: 220 }}><div className="clamp3">{g.descricao}</div></td>
                   <td className="n">{pode ? <input className="input num mini" defaultValue={fmtIn(g.quantidade)} onBlur={(e) => salvarCampo(g, "quantidade", e.target.value)} aria-label={`Quantidade do item ${g.numero}`} /> : num(g.quantidade)} <span className="hint">{g.unidade || ""}</span></td>
                   <td className="n">{pode ? <input className="input num mini" defaultValue={fmtIn(g.valor_unitario)} onBlur={(e) => salvarCampo(g, "valor_unitario", e.target.value)} aria-label={`Valor unitário do item ${g.numero}`} /> : brl(g.valor_unitario)}</td>
