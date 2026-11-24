@@ -4,7 +4,7 @@ Leia isto primeiro. É a passagem de bastão da conversa no claude.ai para o Cla
 
 ## Quem usa e para quê
 - Dono: Edinardo (edinardorlf@gmail.com). Equipe: Edinardo e Marcio (buscam editais, montam propostas e acompanham disputas); Larissa só acompanha disputas.
-- Empresa: Mirafarma Produtos Farmacêuticos Ltda (CNPJ 53.919.689/0001-19), Minas Gerais. Vende medicamentos, odontológicos, médico-hospitalares, saneantes, limpeza e cosméticos. Também existe a Miramed, mas hoje só a Mirafarma disputa.
+- Empresa: Mirafarma Produtos Farmacêuticos Ltda (CNPJ 53.919.689/0001-19), Minas Gerais. Vende medicamentos, odontológicos, médico-hospitalares, saneantes, limpeza e cosméticos. A Miramed é uma empresa independente e não entra no LicitaPro (decisão do dono, 24/11/2026).
 - Participa de mais de 30 licitações por mês: Portal de Compras Públicas (PCP) e Licitar Digital são os mais usados (começar por eles), além de Compras.gov.br, BLL e Licitações-e (Banco do Brasil).
 - Já usou robô comercial de lances (Effecti, só no PCP). Acesso aos portais é por usuário e senha.
 - Objetivo agora: terminar e **testar o robô de lances** em licitação real, mantendo tudo no Claude Code. Depois, vender o LicitaPro (cada empresa cadastrada pelo CNPJ com o login de cada portal).
@@ -49,7 +49,7 @@ Leia isto primeiro. É a passagem de bastão da conversa no claude.ai para o Cla
   - O que o PNCP já tinha entra como histórico, sem alarme.
 
 ## Contas e login (14/11/2026, pedido do dono: "igual o LojaPro")
-- **Cada empresa cliente é uma conta isolada** (tabela `contas`, código curto, ex.: `mirafarma`). Tudo tem `conta_id`; regra restritiva "so a minha conta" no banco; funções na nuvem filtram por conta (robô pela chave em `contas.robo_hash`; radar roda por conta). Mirafarma e Miramed são CNPJs (tabela `empresas`) dentro da conta `mirafarma`.
+- **Cada empresa cliente é uma conta isolada** (tabela `contas`, código curto, ex.: `mirafarma`). Tudo tem `conta_id`; regra restritiva "so a minha conta" no banco; funções na nuvem filtram por conta (robô pela chave em `contas.robo_hash`; radar roda por conta). A conta `mirafarma` tem só o CNPJ da Mirafarma (tabela `empresas`); outra empresa do mesmo dono seria outra conta.
 - **Login por NOME + senha**: o aparelho guarda a empresa (código digitado uma vez, ou link/QR `#entrar/<codigo>`); por dentro o e-mail é `<nome>.<codigo>@contas.licitapro.invalid` (`src/Acesso.jsx` e função `licita-contas` montam igual). Senha provisória → no 1º acesso a pessoa cria a dela (`equipe.trocar_senha`). Esqueceu: "Nova senha provisória". Ninguém cria conta sozinho.
 - **Administrador Auraxis** (`auraxis_admins`, entra com e-mail): painel `src/PainelAuraxis.jsx` (ícone de pessoas no rodapé do menu) cria contas, cadastra pessoas, logo, link/QR e chave do robô. O dono de cada conta cadastra pessoas e troca senhas em Ajustes → Equipe.
 - Desde 15/11 o dono (Edinardo) usa o login por nome `edinardo` (admin e `config.dono` da conta mirafarma); o e-mail ficou só como administrador Auraxis (fora da `equipe`, cai direto no painel). `vistos` e `processos.responsavel` foram passados para o login novo.

@@ -2119,9 +2119,9 @@ function EmpresaForm({ emp, notify, onClose, onSaved }) {
     <div className="sheet-bg" onClick={onClose}>
       <form className="sheet" onClick={(e) => e.stopPropagation()} onSubmit={salvar} noValidate role="dialog" aria-modal="true" aria-label={novo ? "Nova empresa" : "Editar empresa"}>
         <div className="sheet-h"><h2>{novo ? "Nova empresa" : "Editar empresa"}</h2><button type="button" className="iconbtn" onClick={onClose} aria-label="Fechar"><Icon name="x" size={18} /></button></div>
-        <div className="field"><label htmlFor="ef-nome">Razão social</label><input id="ef-nome" className="input" value={f.nome} onChange={(e) => setF({ ...f, nome: e.target.value })} placeholder="Ex.: Miramed Comércio Ltda" /></div>
+        <div className="field"><label htmlFor="ef-nome">Razão social</label><input id="ef-nome" className="input" value={f.nome} onChange={(e) => setF({ ...f, nome: e.target.value })} placeholder="Ex.: Empresa Exemplo Comércio Ltda" /></div>
         <div className="field"><label htmlFor="ef-cnpj">CNPJ</label><input id="ef-cnpj" className="input num" inputMode="numeric" value={f.cnpj} onChange={(e) => setF({ ...f, cnpj: e.target.value })} onBlur={() => setF((x) => ({ ...x, cnpj: fmtCnpj(x.cnpj) }))} placeholder="00.000.000/0000-00" /></div>
-        <div className="field"><label htmlFor="ef-ap">Outros nomes usados nos portais <span style={{ fontWeight: 400, color: "var(--muted)" }}>(separe por vírgula)</span></label><input id="ef-ap" className="input" value={f.apelidos} onChange={(e) => setF({ ...f, apelidos: e.target.value })} placeholder="Ex.: Miramed" /></div>
+        <div className="field"><label htmlFor="ef-ap">Outros nomes usados nos portais <span style={{ fontWeight: 400, color: "var(--muted)" }}>(separe por vírgula)</span></label><input id="ef-ap" className="input" value={f.apelidos} onChange={(e) => setF({ ...f, apelidos: e.target.value })} placeholder="Ex.: Empresa Exemplo" /></div>
         <p className="hint" style={{ margin: 0 }}>O robô usa a razão social, esses nomes e o CNPJ para avisar quando o pregoeiro citar a empresa e quando ela vencer um item.</p>
         {!novo && <label className="toggle"><input type="checkbox" checked={f.ativa} onChange={(e) => setF({ ...f, ativa: e.target.checked })} />Empresa ativa em licitações</label>}
         {err && <p className="err">{err}</p>}
