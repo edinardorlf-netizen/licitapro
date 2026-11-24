@@ -51,20 +51,17 @@ export const ACOMPANHANDO = ["disputa", "julgamento", "habilitacao", "recurso", 
 export const POS_VITORIA = ["ata", "execucao"];
 // Processos "vivos" (Início e Agenda)
 export const ATIVAS = ["analise", "participar", "proposta", "suspenso", ...ACOMPANHANDO];
-// Fim do processo: homologado / finalizado no portal, com o vencedor de cada item declarado.
-// Assim que o robô vê isso, o processo sai de "Em finalização" e passa para "Finalizados" sozinho.
-const RE_FINAL = /finalizad|homologad|contrato|conclu[ií]d|encerrad/i;
+// Fim do processo (decisão do dono, 24/11/2026): encaminhado para adjudicação / homologação já é fim:
+// tudo o que a empresa tinha a fazer na sessão terminou. Vai direto para "Finalizados" (com ou sem vitória).
 export const finalizado = (p) =>
-  POS_VITORIA.includes(p.etapa) || p.etapa === "concluido" ||
-  (p.etapa === "homologacao" && !!p.resultado && (p.valor_homologado != null || RE_FINAL.test(`${p.situacao_portal || ""} ${p.situacao_pncp || ""}`)));
+  POS_VITORIA.includes(p.etapa) || p.etapa === "concluido" || p.etapa === "homologacao";
 // Categorias da aba Processos: cada processo fica em uma só (exceto "Todos").
 export const CATEGORIAS = [
   { id: "vamos", nome: "⭐ Vamos participar", desc: "Proposta ainda a lançar", teste: (p) => A_LANCAR.includes(p.etapa) },
   { id: "proposta", nome: "📨 Proposta enviada", desc: "Aguardando a abertura da sessão (ou suspenso antes dela)", teste: (p) => p.etapa === "proposta" || (p.etapa === "suspenso" && !ACOMPANHANDO.includes(p.etapa_antes)) },
   { id: "acompanhando", nome: "👁 Em disputa", desc: "Sessão aberta: lances, julgamento, habilitação e recurso", teste: (p) => ["disputa", "julgamento", "habilitacao", "recurso"].includes(p.etapa) || (p.etapa === "suspenso" && ACOMPANHANDO.includes(p.etapa_antes)) },
-  { id: "finalizacao", nome: "⏳ Em finalização", desc: "Encaminhados para adjudicação / homologação, ainda sem o resultado final de todos os itens", teste: (p) => p.etapa === "homologacao" && !finalizado(p) },
-  { id: "ganhos", nome: "🏆 Finalizados com vitória", desc: "Homologados, com a empresa vencedora de itens: ata, contrato, empenho e entrega", teste: (p) => finalizado(p) && (ganhou(p) || POS_VITORIA.includes(p.etapa)) },
-  { id: "perdidos", nome: "Finalizados sem vitória", desc: "Homologados ou encerrados sem itens para a empresa", teste: (p) => finalizado(p) && !ganhou(p) && !POS_VITORIA.includes(p.etapa) },
+  { id: "ganhos", nome: "🏆 Finalizados com vitória", desc: "Encaminhados para adjudicação / homologação ou homologados, com itens vencidos: ata, contrato, empenho e entrega", teste: (p) => finalizado(p) && (ganhou(p) || POS_VITORIA.includes(p.etapa)) },
+  { id: "perdidos", nome: "Finalizados sem vitória", desc: "Encaminhados para homologação, homologados ou encerrados sem itens para a empresa", teste: (p) => finalizado(p) && !ganhou(p) && !POS_VITORIA.includes(p.etapa) },
   { id: "todos", nome: "Todos", desc: "", teste: () => true },
 ];
 

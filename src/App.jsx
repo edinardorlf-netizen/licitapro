@@ -1048,7 +1048,7 @@ function Processos({ ctx }) {
   const contagem = Object.fromEntries(CATS.map((c) => [c.id, daEmpresa.filter(c.teste).length]));
   // Sem escolha salva: abre em "Acompanhando" se houver; senão "Vamos participar".
   const catId = (id) => CATS.find((c) => c.id === id);
-  const cat = catId(filtro) || (contagem.acompanhando ? catId("acompanhando") : contagem.finalizacao ? catId("finalizacao") : contagem.vamos ? catId("vamos") : catId("todos"));
+  const cat = catId(filtro) || (contagem.acompanhando ? catId("acompanhando") : contagem.vamos ? catId("vamos") : catId("todos"));
   const escolher = (id) => { setFiltro(id); try { sessionStorage.setItem("lp-cat", id); } catch (e) { /* ignora */ } };
   const lista = daEmpresa.filter((p) => cat.teste(p) && (!q || `${p.orgao} ${p.municipio} ${p.numero} ${p.objeto}`.toLowerCase().includes(q.toLowerCase())));
   // Antes da sessão (Vamos participar / Proposta enviada): só a data manda, a sessão mais próxima na 1ª linha;
