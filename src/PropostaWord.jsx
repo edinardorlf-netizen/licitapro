@@ -126,7 +126,7 @@ export default function PropostaWord({ p, itens, ganhos, ctx, salvar }) {
           <label htmlFor="pw-proc">Nº do processo licitatório</label>
           <input id="pw-proc" className="input" style={{ width: 170 }} value={proc} onChange={(e) => setProc(e.target.value)} onBlur={gravarProc} placeholder="Ex.: 177/2026" />
         </div>
-        <div className="hint" style={{ paddingBottom: 8 }}>Pregão nº <b>{camposPadrao(p, emp || {}).pregao || "—"}</b> · Validade: <b>{camposPadrao(p, emp || {}).validade}</b>{p.validade_dias ? " (do edital)" : ""}</div>
+        <div className="hint" style={{ paddingBottom: 8 }}>{camposPadrao(p, emp || {}).modalidade}{camposPadrao(p, emp || {}).srp ? " · Registro de Preços" : ""} · nº <b>{camposPadrao(p, emp || {}).pregao || "—"}</b> · Validade: <b>{camposPadrao(p, emp || {}).validade}</b>{p.validade_dias ? " (do edital)" : ""}</div>
       </div>
 
       <div className="row-inline" style={{ gap: 14, flexWrap: "wrap" }}>

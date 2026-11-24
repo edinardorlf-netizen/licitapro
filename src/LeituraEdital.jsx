@@ -22,6 +22,12 @@ function Trecho({ texto, item, pagina }) {
   );
 }
 
+// Nº do processo licitatório/administrativo (para a proposta em Word), ex.: "PROCESSO LICITATÓRIO Nº 040/2026"
+export function numeroProcessoDoEdital(texto) {
+  const m = String(texto || "").slice(0, 60000).match(/processo\s+(?:licitat[óo]rio|administrativo|de\s+compra)?\s*(?:n[º°o.]*|n[úu]mero)?\s*[:\-]?\s*(\d{1,6}\s*\/\s*\d{2,4})/i);
+  return m ? m[1].replace(/\s+/g, "") : null;
+}
+
 export default function LeituraEdital({ p, pode, notify, salvar }) {
   const [busy, setBusy] = useState("");
   const [erro, setErro] = useState("");
@@ -32,7 +38,7 @@ export default function LeituraEdital({ p, pode, notify, salvar }) {
   const montar = (r) => {
     const docs = acharDocumentos(r.texto).map((d, i) => ({ ...d, id: i, usar: !d.confirmar || d.vezes > 1 }));
     const { pontos, faltou } = pontosAtencao(r.texto);
-    setLido({ arquivo: r.arquivo, paginas: r.paginas, parcial: r.parcial, docs, pontos, faltou, tamanho: r.texto.length });
+    setLido({ arquivo: r.arquivo, paginas: r.paginas, parcial: r.parcial, docs, pontos, faltou, tamanho: r.texto.length, processo: numeroProcessoDoEdital(r.texto) });
     setParte("atencao");
   };
   const lerDoPortal = async () => {
@@ -61,7 +67,8 @@ export default function LeituraEdital({ p, pode, notify, salvar }) {
       documentos_edital: docs,
       edital_resumo: { arquivo: lido.arquivo, paginas: lido.paginas, parcial: !!lido.parcial, pontos: lido.pontos, faltou: lido.faltou },
       documentos_lidos_em: new Date().toISOString(),
-    }, `Leitura do edital gravada: ${lido.pontos.length} pontos de atenção e ${docs.length} documentos (vão para a aba Documentos da planilha)`);
+      ...(!p.numero_processo && lido.processo ? { numero_processo: lido.processo } : {}),
+    }, `${!p.numero_processo && lido.processo ? `Nº do processo ${lido.processo} gravado. ` : ""}Leitura do edital gravada: ${lido.pontos.length} pontos de atenção e ${docs.length} documentos (vão para a aba Documentos da planilha)`);
     setLido(null);
   };
   const mudaDoc = (id, patch) => setLido((l) => ({ ...l, docs: l.docs.map((d) => (d.id === id ? { ...d, ...patch } : d)) }));

@@ -106,6 +106,19 @@ export function conferirModelo(u8) {
 // ---------- montagem ----------
 const SEM_PREFIXO = (n) => String(n || "").replace(/^\s*(PE|preg[aã]o( eletr[oô]nico)?)\s*(n[º°o.]*)?\s*/i, "").trim();
 
+// Modalidade como aparece na proposta (o PNCP diz "Pregão - Eletrônico"; o PCP, "Pregão para Registro de Preços")
+export function modalidadeProposta(m) {
+  const t = String(m || "").toLowerCase();
+  const pres = /presencial/.test(t);
+  if (/preg/.test(t)) return pres ? "PREGÃO PRESENCIAL" : "PREGÃO ELETRÔNICO";
+  if (/dispensa/.test(t)) return pres ? "DISPENSA DE LICITAÇÃO" : "DISPENSA ELETRÔNICA";
+  if (/concorr/.test(t)) return pres ? "CONCORRÊNCIA" : "CONCORRÊNCIA ELETRÔNICA";
+  if (/inexig/.test(t)) return "INEXIGIBILIDADE";
+  if (/credenc/.test(t)) return "CREDENCIAMENTO";
+  if (/leil/.test(t)) return "LEILÃO";
+  return "PREGÃO ELETRÔNICO";
+}
+
 export function camposPadrao(p, emp) {
   let orgao = String(p.orgao || "").toUpperCase().trim();
   const mun = String(p.municipio || "").toUpperCase().trim();
@@ -116,7 +129,8 @@ export function camposPadrao(p, emp) {
     orgao,
     pregao: SEM_PREFIXO(p.numero),
     processo: p.numero_processo || "",
-    srp: /registro\s+de\s+pre/i.test(p.objeto || "") || /\bRP\b|SRP/.test(p.modalidade || ""),
+    modalidade: modalidadeProposta(p.modalidade),
+    srp: p.srp != null ? !!p.srp : /registro\s+de\s+pre/i.test(p.objeto || "") || /\bRP\b|SRP/.test(p.modalidade || ""),
     validade: diasPorExtenso(dias),
     data: dataPorExtenso(new Date()),
   };
@@ -198,6 +212,10 @@ function ajustarColunas(tbl, opcoes) {
 export function montarProposta({ modelo, emp, tipo, campos, itens, opcoes }) {
   const z = unzipSync(modelo);
   let doc = strFromU8(z["word/document.xml"]);
+  // Modelos antigos têm "PREGÃO ELETRÔNICO" escrito fixo: vira o marcador da modalidade do processo
+  doc = doc.replace(/PREGÃO ELETRÔNICO(\s*N[º°o])/g, "{{MODALIDADE}}$1");
+  // Fora do pregão quem conduz é o agente de contratação (Lei 14.133, art. 8º)
+  if (campos.modalidade && !/PREG/.test(campos.modalidade)) doc = doc.replace(/AO PREGOEIRO E EQUIPE DE APOIO/g, "AO AGENTE DE CONTRATAÇÃO E EQUIPE DE APOIO");
   const lista = ordenar(itens);
   const total = c2(lista.reduce((a, i) => a + (Number(i.vt) || 0), 0));
 
@@ -224,6 +242,7 @@ export function montarProposta({ modelo, emp, tipo, campos, itens, opcoes }) {
     TITULO: tipo === "ajustada" ? "PROPOSTA AJUSTADA" : "PROPOSTA",
     ORGAO: campos.orgao,
     PREGAO: campos.pregao,
+    MODALIDADE: campos.modalidade || "PREGÃO ELETRÔNICO",
     PROCESSO: proc || "____/____",
     SRP: campos.srp ? " - REGISTRO DE PREÇOS" : "",
     EMPRESA: emp.razao || "",

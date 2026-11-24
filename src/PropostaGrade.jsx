@@ -1,6 +1,7 @@
 // =====================================================================
 // LicitaPro · aba "Proposta" do processo
-// Grade para lançar, item a item, o valor unitário e a marca da proposta.
+// Grade para lançar, item a item, o valor unitário, a marca e o registro Anvisa da proposta,
+// e (depois da disputa) marcar os itens que vencemos com o valor final → PROPOSTA AJUSTADA.
 // Grava sozinho ao sair do campo (Enter desce para o próximo item).
 // Só registra no LicitaPro: nada é enviado ao portal.
 // =====================================================================
@@ -9,7 +10,7 @@ import { sb, brl, num, parseNum, fmtIn, errMsg } from "./util.js";
 
 const c2 = (v) => Math.round(v * 100) / 100;
 
-export default function PropostaGrade({ itens, pode, notify, onSaved }) {
+export default function PropostaGrade({ itens, pode, notify, onSaved, ganhos = [], podeGanhos, onGanho, onMudouGanhos }) {
   const [soMeus, setSoMeus] = useState(() => itens.some((i) => i.participar));
   const [q, setQ] = useState("");
   const [rasc, setRasc] = useState({}); // { [id]: { preco, marca } } enquanto digita
@@ -19,7 +20,7 @@ export default function PropostaGrade({ itens, pode, notify, onSaved }) {
   const valor = (it, campo) => {
     const r = rasc[it.id];
     if (r && campo in r) return r[campo];
-    return campo === "preco" ? fmtIn(it.preco_unit) : it.marca || "";
+    return campo === "preco" ? fmtIn(it.preco_unit) : (it[campo] || "");
   };
   const digitar = (it, campo, v) => setRasc((r) => ({ ...r, [it.id]: { ...(r[it.id] || {}), [campo]: v } }));
 
@@ -35,9 +36,9 @@ export default function PropostaGrade({ itens, pode, notify, onSaved }) {
       patch.preco_total = v != null && it.quantidade != null ? c2(v * Number(it.quantidade)) : null;
       if (v != null && !it.participar) patch.participar = true; // lançou preço = vamos disputar
     } else {
-      const m = r.marca.trim() || null;
-      if (m === (it.marca || null)) return limpar(it, campo);
-      patch.marca = m;
+      const m = String(r[campo]).trim() || null;
+      if (m === (it[campo] || null)) return limpar(it, campo);
+      patch[campo] = m;
     }
     setEstado((e) => ({ ...e, [it.id]: "salvando" }));
     const { data, error } = await sb.from("itens").update(patch).eq("id", it.id).select("*").single();
@@ -53,6 +54,19 @@ export default function PropostaGrade({ itens, pode, notify, onSaved }) {
     return o;
   });
 
+  // Itens que vencemos (base da PROPOSTA AJUSTADA): marcados sozinhos pelo robô ou aqui, à mão
+  const ganhoDe = (it) => ganhos.find((g) => (g.item_id && g.item_id === it.id) || String(g.numero) === String(it.numero));
+  const mostrarGanhos = podeGanhos || ganhos.length > 0;
+  const salvarValorFinal = async (g, txt) => {
+    const v = parseNum(txt);
+    if (txt.trim() !== "" && (v == null || v < 0)) return notify(`Item ${g.numero}: valor inválido`);
+    if (v === (g.valor_unitario != null ? Number(g.valor_unitario) : null)) return;
+    const { error } = await sb.from("itens_ganhos").update({ valor_unitario: v }).eq("id", g.id);
+    if (error) return notify(errMsg(error));
+    notify(`Item ${g.numero}: valor final ${v != null ? brl(v) : "apagado"}`);
+    onMudouGanhos && onMudouGanhos();
+  };
+
   // Enter / setas: desce ou sobe na mesma coluna
   const teclas = (e, campo) => {
     if (!["Enter", "ArrowDown", "ArrowUp"].includes(e.key)) return;
@@ -66,6 +80,7 @@ export default function PropostaGrade({ itens, pode, notify, onSaved }) {
   const lista = itens.filter((i) => (!soMeus || i.participar) && (!q || `${i.numero} ${i.descricao || ""} ${i.marca || ""}`.toLowerCase().includes(q.toLowerCase())));
   const comPreco = itens.filter((i) => i.preco_unit != null);
   const semMarca = comPreco.filter((i) => !i.marca).length;
+  const totalGanho = ganhos.reduce((a, g) => a + (Number(g.valor_unitario) || 0) * (Number(g.quantidade) || 0), 0);
   const total = comPreco.reduce((a, i) => a + (i.preco_total != null ? Number(i.preco_total) : c2(Number(i.preco_unit) * (Number(i.quantidade) || 0))), 0);
 
   return (
@@ -77,16 +92,18 @@ export default function PropostaGrade({ itens, pode, notify, onSaved }) {
           {itens.length > 10 && <input className="input" style={{ maxWidth: 200 }} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Filtrar item ou marca" aria-label="Filtrar itens" />}
         </div>
       </div>
-      <p className="hint" style={{ margin: 0 }}>Lance aqui o <b>valor unitário</b> e a <b>marca</b> de cada item da proposta. Grava ao sair do campo; Enter desce para o próximo item. Ao lançar um preço, o item passa a “vamos disputar”. Isto fica só no LicitaPro: o envio da proposta no portal continua sendo feito por vocês.</p>
+      <p className="hint" style={{ margin: 0 }}>Lance aqui o <b>valor unitário</b>, a <b>marca</b> e o <b>registro Anvisa</b> de cada item da proposta (ou envie a planilha de cotação preenchida, acima). Grava ao sair do campo; Enter desce para o próximo item. Ao lançar um preço, o item passa a “vamos disputar”. Isto fica só no LicitaPro: o envio da proposta no portal continua sendo feito por vocês.</p>
+      {mostrarGanhos && <p className="hint" style={{ margin: 0 }}><b>Depois da disputa:</b> marque <b>🏆 Vencemos</b> nos itens que a empresa ganhou e confira o <b>valor final</b> (o do último lance ou o negociado). A PROPOSTA AJUSTADA, abaixo, sai só com esses itens. Itens marcados sozinhos pelo portal ou pelo PNCP já vêm marcados.</p>}
       <div className="row-inline" style={{ gap: 14, flexWrap: "wrap" }}>
         <span>Itens com preço: <b>{comPreco.length}</b> de {itens.length}</span>
         <span>Total da proposta: <b>{brl(total)}</b></span>
+        {ganhos.length > 0 && <span>🏆 Vencidos: <b>{ganhos.length}</b> · total final <b>{brl(totalGanho)}</b></span>}
         {semMarca > 0 && <span style={{ color: "var(--red)" }}>⚠ {semMarca} {semMarca === 1 ? "item" : "itens"} com preço e sem marca</span>}
       </div>
       {!lista.length ? <div className="empty">{soMeus ? "Nenhum item marcado para disputa. Desmarque “Só os que vamos disputar” para ver todos." : "Nenhum item encontrado."}</div> : (
         <div style={{ overflowX: "auto" }} ref={grade}>
           <table className="itab">
-            <thead><tr><th>Item</th><th>Descrição</th><th className="n">Qtd</th><th className="n">Ref. unit.</th><th className="n">Valor unitário</th><th className="n">Valor total</th><th>Marca</th><th aria-label="Situação" /></tr></thead>
+            <thead><tr><th>Item</th><th>Descrição</th><th className="n">Qtd</th><th className="n">Ref. unit.</th><th className="n">Valor unitário</th><th className="n">Valor total</th><th>Marca</th><th>Reg. Anvisa</th>{mostrarGanhos && <th>🏆 Vencemos</th>}{mostrarGanhos && <th className="n">Valor final unit.</th>}<th aria-label="Situação" /></tr></thead>
             <tbody>
               {lista.map((it) => {
                 const pv = parseNum(valor(it, "preco"));
@@ -94,6 +111,8 @@ export default function PropostaGrade({ itens, pode, notify, onSaved }) {
                 const acima = pv != null && ref != null && pv > ref;
                 const abaixoPiso = pv != null && it.valor_minimo != null && pv < Number(it.valor_minimo);
                 const st = estado[it.id];
+                const g = ganhoDe(it);
+                const sugFinal = it.resultado_valor ?? (it.nosso_arremata ? it.arrematante_lance : null) ?? it.nosso_lance ?? null;
                 return (
                   <tr key={it.id} style={it.participar ? null : { opacity: 0.7 }}>
                     <td>{it.numero}</td>
@@ -110,6 +129,24 @@ export default function PropostaGrade({ itens, pode, notify, onSaved }) {
                     <td className="n">{pv != null && it.quantidade != null ? brl(c2(pv * Number(it.quantidade))) : "—"}</td>
                     <td>{pode ? <input className="input mini" style={{ width: 150 }} data-campo="marca" value={valor(it, "marca")} onChange={(e) => digitar(it, "marca", e.target.value)}
                       onBlur={() => salvar(it, "marca")} onKeyDown={(e) => teclas(e, "marca")} aria-label={`Marca do item ${it.numero}`} /> : it.marca || "—"}</td>
+                    <td>{pode ? <input className="input mini" style={{ width: 130 }} data-campo="anvisa" value={valor(it, "anvisa")} onChange={(e) => digitar(it, "anvisa", e.target.value)}
+                      onBlur={() => salvar(it, "anvisa")} onKeyDown={(e) => teclas(e, "anvisa")} aria-label={`Registro Anvisa do item ${it.numero}`} /> : it.anvisa || "—"}</td>
+                    {mostrarGanhos && (
+                      <td style={{ textAlign: "center" }}>
+                        <input type="checkbox" checked={!!g} disabled={!podeGanhos || (g && g.origem !== "manual")}
+                          title={g && g.origem !== "manual" ? "Marcado pelo portal/PNCP" : "Vencemos este item"}
+                          onChange={(e) => onGanho && onGanho(it, e.target.checked)} aria-label={`Vencemos o item ${it.numero}`} />
+                      </td>
+                    )}
+                    {mostrarGanhos && (
+                      <td className="n">
+                        {g ? (podeGanhos
+                          ? <input key={`${g.id}-${g.valor_unitario}`} className="input num mini" style={{ width: 110, borderColor: g.valor_unitario == null ? "var(--red)" : undefined }} inputMode="decimal" data-campo="final"
+                              defaultValue={fmtIn(g.valor_unitario)} placeholder="valor final" onBlur={(e) => salvarValorFinal(g, e.target.value)} onKeyDown={(e) => teclas(e, "final")} aria-label={`Valor final do item ${it.numero}`} />
+                          : brl(g.valor_unitario))
+                          : sugFinal != null ? <span className="hint">lance {brl(sugFinal)}</span> : null}
+                      </td>
+                    )}
                     <td style={{ width: 22 }} aria-live="polite">{st === "salvando" ? <span className="spin" /> : st === "ok" ? <span title="Gravado" style={{ color: "var(--green)" }}>✓</span> : st === "erro" ? <span title="Não gravou" style={{ color: "var(--red)" }}>!</span> : null}</td>
                   </tr>
                 );

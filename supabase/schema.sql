@@ -766,6 +766,9 @@ create policy "admin altera modelos" on public.modelos_documentos for all using 
 -- Por processo: nº do processo licitatório (≠ nº do pregão) e opções da proposta ({"colunas": {"anvisa": bool, "obs": bool}})
 alter table public.processos add column if not exists numero_processo text;
 alter table public.processos add column if not exists proposta_opcoes jsonb not null default '{}'::jsonb;
+-- Migração processos_srp_numero_processo (24/11/2026): registro de preços (PNCP/PCP) para a proposta em Word;
+-- nº do processo, modalidade e SRP vêm do PNCP, do PCP ou da leitura do edital.
+alter table public.processos add column if not exists srp boolean;
 
 -- =====================================================================
 -- Migração robo_arquivos_admin_publica (14/11/2026): o administrador publica versões novas do robô de lances

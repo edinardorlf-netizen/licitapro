@@ -289,6 +289,10 @@ async function verificarProcesso(p: any, opts: { inicial?: boolean } = {}) {
       upd.valor_homologado = det.valorTotalHomologado;
       upd.valor_estimado = det.valorTotalEstimado;
       if (!p.objeto) upd.objeto = limpaObjeto(det.objetoCompra);
+      // Para a proposta em Word sair pronta: nº do processo licitatório, modalidade e registro de preços
+      if (!p.numero_processo && det.processo) upd.numero_processo = String(det.processo).trim();
+      if (!p.modalidade && det.modalidadeNome) upd.modalidade = det.modalidadeNome;
+      if (typeof det.srp === "boolean" && p.srp !== det.srp) upd.srp = det.srp;
       if (!p.link_origem && det.linkSistemaOrigem) upd.link_origem = det.linkSistemaOrigem;
       if (!p.pcp_path) {
         const path = pcpPathDe(det.linkSistemaOrigem);
@@ -393,6 +397,13 @@ async function verificarProcesso(p: any, opts: { inicial?: boolean } = {}) {
       }
       upd.situacao_portal = status;
       if (proc.dataHoraAbertura) upd.data_sessao = proc.dataHoraAbertura;
+      // Modalidade e registro de preços (para a proposta em Word); o PNCP, quando houver, manda na modalidade
+      const tipoPcp = `${proc.tipoPregao || ""} ${proc.tipoLicitacao || ""}`;
+      if (!p.modalidade && !upd.modalidade && tipoPcp.trim()) {
+        const mod = /preg/i.test(tipoPcp) ? "Pregão - Eletrônico" : /dispensa/i.test(tipoPcp) ? "Dispensa - Eletrônica" : /concorr/i.test(tipoPcp) ? "Concorrência - Eletrônica" : /credenc/i.test(tipoPcp) ? "Credenciamento" : null;
+        if (mod) upd.modalidade = mod;
+      }
+      if (p.srp == null && upd.srp == null && tipoPcp.trim()) upd.srp = /registro de pre/i.test(tipoPcp);
       upd.prazo_impugnacao = proc.dataHoraLimiteImpugnacoes || null;
       upd.prazo_esclarecimento = proc.dataHoraLimiteEsclarecimentos || proc.dataHoraLimiteEsclarecimento || null;
       if ((!p.orgao || inicial) && proc.razaoSocialComprador) upd.orgao = proc.razaoSocialComprador;
@@ -789,7 +800,7 @@ async function buscarPorId(idTxt: string, portalK: string, dataDica: string | nu
 }
 
 // ---------- CADASTRAR ----------
-async function cadastrar(contaId: string, entrada: string, email: string | null, empresaId: string | null = null, portalK: string | null = null, dataDica: string | null = null) {
+async function cadastrar(contaId: string, entrada: string, email: string | null, empresaId: string | null = null, portalK: string | null = null, dataDica: string | null = null, favorito = false) {
   if (!contaId) throw new Error("Conta não identificada.");
   if (empresaId) {
     const { data: e } = await db.from("empresas").select("id").eq("id", empresaId).eq("conta_id", contaId).maybeSingle();
@@ -862,6 +873,9 @@ async function cadastrar(contaId: string, entrada: string, email: string | null,
     numero: det?.numeroCompra || edital?.numero || null,
     objeto: limpaObjeto(det?.objetoCompra || edital?.objeto || ""),
     modalidade: det?.modalidadeNome || edital?.modalidade || null,
+    numero_processo: (det?.processo ? String(det.processo).trim() : null) || edital?.processo_num || null,
+    srp: typeof det?.srp === "boolean" ? det.srp : (edital?.srp ?? null),
+    ...(favorito ? { favorito: true, etapa: "participar" } : {}),
     valor_estimado: det?.valorTotalEstimado ?? edital?.valor_estimado ?? null,
     data_sessao: brt(det?.dataEncerramentoProposta) || edital?.encerramento_propostas || null,
     situacao_pncp: det?.situacaoCompraNome || null,
@@ -873,12 +887,14 @@ async function cadastrar(contaId: string, entrada: string, email: string | null,
   if (error) throw new Error(`Não foi possível cadastrar: ${error.message}`);
   if (edital) await db.from("editais").update({ status: "acompanhando" }).eq("id", edital.id);
   await db.from("movimentacoes").insert({ processo_id: criado.id, fonte: "sistema", tipo: "cadastro", titulo: "Processo cadastrado para acompanhamento", autor: email || "robô", ocorrido_em: new Date().toISOString(), chave: "cadastro" });
-  try {
-    await verificarProcesso(criado, { inicial: true });
-  } catch (e) {
+  // A primeira verificação completa (itens, documentos, chat) leva de 10 a 60 s: roda em segundo plano,
+  // e o app já recebe a resposta (a tela do processo atualiza sozinha quando terminar).
+  const primeira = verificarProcesso(criado, { inicial: true }).catch(async (e) => {
     await db.from("processos").update({ erro: String((e as Error).message || e), proxima_verificacao: new Date(Date.now() + 10 * 60e3).toISOString() }).eq("id", criado.id);
-  }
-  return { id: criado.id, existente: false };
+  });
+  // @ts-ignore EdgeRuntime existe nas funções do Supabase
+  if (typeof EdgeRuntime !== "undefined" && EdgeRuntime.waitUntil) EdgeRuntime.waitUntil(primeira); else await primeira;
+  return { id: criado.id, existente: false, favorito: !!favorito };
 }
 
 // ---------- Entrada ----------
@@ -920,7 +936,7 @@ Deno.serve(async (req) => {
       const emp = typeof body.empresa_id === "string" && /^[0-9a-f-]{36}$/i.test(body.empresa_id) ? body.empresa_id : null;
       const portalK = typeof body.portal === "string" && /^[a-z-]{2,15}$/.test(body.portal) ? body.portal : null;
       const dataDica = typeof body.data === "string" && /^\d{4}-\d{2}-\d{2}$/.test(body.data) ? body.data : null;
-      return json(await cadastrar(membro.conta_id, String(body.entrada || ""), email, emp, portalK, dataDica));
+      return json(await cadastrar(membro.conta_id, String(body.entrada || ""), email, emp, portalK, dataDica, body.favorito === true));
     }
     if (body.acao === "push_teste") {
       const enviados = await enviarPush({ titulo: "LicitaPro", corpo: "✅ Notificações ligadas neste aparelho. Os avisos do robô vão aparecer assim.", url: APP_URL, tag: "teste" }, email);

@@ -779,11 +779,14 @@ function Radar({ ctx }) {
   const favoritar = async (e) => {
     setOcupado(e.id);
     try {
-      const r = await chamarRobo({ acao: "cadastrar", entrada: e.controle_pncp });
-      const { data: pr } = await sb.from("processos").select("etapa").eq("id", r.id).maybeSingle();
-      const patch = { favorito: true };
-      if (pr && pr.etapa === "analise") patch.etapa = "participar";
-      await sb.from("processos").update(patch).eq("id", r.id);
+      // Cadastro já com ⭐ (a verificação completa roda em segundo plano na nuvem)
+      const r = await chamarRobo({ acao: "cadastrar", entrada: e.controle_pncp, favorito: true });
+      if (!r.favorito) { // já cadastrado (ou função antiga): marca aqui
+        const { data: pr } = await sb.from("processos").select("etapa").eq("id", r.id).maybeSingle();
+        const patch = { favorito: true };
+        if (pr && pr.etapa === "analise") patch.etapa = "participar";
+        await sb.from("processos").update(patch).eq("id", r.id);
+      }
       // Sai da Busca de Editais e passa a ser acompanhado (Acompanhamento → ⭐ Vamos participar)
       setLista((l) => (l || []).filter((x) => x.id !== e.id));
       setTotal((t) => Math.max(0, t - 1));
@@ -1053,15 +1056,17 @@ function Processos({ ctx }) {
   const agoraMs = Date.now();
   const ms = (p) => new Date(p.data_sessao).getTime();
   const grupoData = (p) => !p.data_sessao || isNaN(ms(p)) ? 1 : ms(p) >= agoraMs ? 0 : 2;
+  // Em todas as categorias: primeiro os com notificação importante, depois os com novidade comum, depois o resto.
+  const nivelNV = (p) => { const n = naoVistas[p.id]; return !n ? 0 : Number(n.importantes) ? 2 : 1; };
   const ordenada = [...lista].sort((a, b) => {
+    const na = nivelNV(a), nb = nivelNV(b);
+    if (na !== nb) return nb - na;
     if (cat.id === "vamos" || cat.id === "proposta") {
       const ga = grupoData(a), gb = grupoData(b);
       if (ga !== gb) return ga - gb;
       if (ga === 1) return 0;
       return ga === 0 ? ms(a) - ms(b) : ms(b) - ms(a);
     }
-    const na = naoVistas[a.id] ? 1 : 0, nb = naoVistas[b.id] ? 1 : 0;
-    if (na !== nb) return nb - na;
     return (a.data_sessao || "9") < (b.data_sessao || "9") ? -1 : 1;
   });
   const naoLidosAqui = ordenada.filter((p) => naoVistas[p.id]).map((p) => p.id);
@@ -1334,8 +1339,8 @@ function NovoProcesso({ ctx, onClose }) {
     if (!v.trim()) return setErr(portalSel && portalSel.id ? "Informe o ID do processo no portal (ou cole o link)." : "Cole o link ou o número do processo.");
     setBusy(true); setErr("");
     try {
-      const r = await chamarRobo({ acao: "cadastrar", entrada: v.trim(), empresa_id: empId || null, portal: portalSel ? portalSel.k : null, data: dataPub || null });
-      if (fav) {
+      const r = await chamarRobo({ acao: "cadastrar", entrada: v.trim(), empresa_id: empId || null, portal: portalSel ? portalSel.k : null, data: dataPub || null, favorito: fav });
+      if (fav && !r.favorito) {
         const { data: pr } = await sb.from("processos").select("etapa").eq("id", r.id).maybeSingle();
         await sb.from("processos").update({ favorito: true, ...(pr && pr.etapa === "analise" ? { etapa: "participar" } : {}) }).eq("id", r.id);
       }
@@ -1531,7 +1536,7 @@ function Processo({ id, ctx, onBack, abaInicial }) {
   // Item ganho marcado à mão (quando o robô não pegou, ex.: Licitar Digital ou resultado fora do chat)
   const marcarGanho = async (it, sim) => {
     if (sim) {
-      const { error } = await sb.from("itens_ganhos").insert({ processo_id: id, item_id: it.id, empresa_id: p.empresa_id, numero: it.numero, descricao: it.descricao, unidade: it.unidade, quantidade: it.quantidade, valor_unitario: it.resultado_valor ?? (it.nosso_arremata ? it.arrematante_lance : null) ?? it.melhor_lance ?? null, marca: it.marca, origem: "manual" });
+      const { error } = await sb.from("itens_ganhos").insert({ processo_id: id, item_id: it.id, empresa_id: p.empresa_id, numero: it.numero, descricao: it.descricao, unidade: it.unidade, quantidade: it.quantidade, valor_unitario: it.resultado_valor ?? (it.nosso_arremata ? it.arrematante_lance : null) ?? it.nosso_lance ?? it.preco_unit ?? null, marca: it.marca, origem: "manual" });
       if (error) return notify(/duplicate/i.test(error.message) ? "Esse item já está nos itens ganhos" : errMsg(error));
       notify(`🏆 Item ${it.numero} marcado como ganho`);
     } else {
@@ -1737,11 +1742,10 @@ function Processo({ id, ctx, onBack, abaInicial }) {
             <h2>Itens</h2>
             <label className="toggle"><input type="checkbox" checked={soMeus} onChange={(e) => setSoMeus(e.target.checked)} />Só os que vamos disputar</label>
           </div>
-          <p className="hint" style={{ marginBottom: 12 }}>Marque os itens que a empresa vai disputar e digite o <b>valor mínimo</b> (piso) de cada um. Sem valor mínimo, o robô não dá lance no item.</p>
-          {!ctx.celular && itens.length > 0 && <CotacaoPainel p={p} itens={itens} pode={podeProp} notify={notify} onMudou={carregar} onProposta={() => setAba("proposta")} />}
+          <p className="hint" style={{ marginBottom: 12 }}>Marque os itens que a empresa vai disputar. Preço, marca, Anvisa, planilha de cotação e itens vencidos ficam na aba{!ctx.celular && itens.length > 0 ? <> <button type="button" className="linkbtn" onClick={() => setAba("proposta")}>📝 Proposta</button></> : " Proposta"}; o valor mínimo (piso) é digitado em Lances, quando o processo entra em disputa.</p>
           {!itens.length ? <div className="empty">Os itens aparecem aqui depois da primeira verificação.</div> : (
             <div className="stack" style={{ gap: 10 }}>
-              {(soMeus ? meus : itens).map((it) => <Item key={it.id} it={it} pode={podeProp} notify={notify} email={email} ganho={ganhos.find((g) => g.numero === it.numero)} onGanho={marcarGanho} onSaved={(n) => setItens((l) => l.map((x) => (x.id === n.id ? n : x)))} />)}
+              {(soMeus ? meus : itens).map((it) => <Item key={it.id} it={it} pode={podeProp} notify={notify} ganho={ganhos.find((g) => g.numero === it.numero)} onSaved={(n) => setItens((l) => l.map((x) => (x.id === n.id ? n : x)))} />)}
               {soMeus && !meus.length && <div className="empty">Nenhum item marcado ainda.</div>}
             </div>
           )}
@@ -1749,8 +1753,9 @@ function Processo({ id, ctx, onBack, abaInicial }) {
       )}
 
       {aba === "edital" && <LeituraEdital p={p} pode={podeProp} notify={notify} salvar={salvar} />}
-      {aba === "proposta" && !ctx.celular && <PropostaWord p={p} itens={itens} ganhos={ganhos} ctx={ctxProp} salvar={salvar} />}
-      {aba === "proposta" && !ctx.celular && itens.length > 0 && <PropostaGrade itens={itens} pode={podeProp} notify={notify} onSaved={(n) => setItens((l) => l.map((x) => (x.id === n.id ? n : x)))} />}
+      {aba === "proposta" && !ctx.celular && itens.length > 0 && <CotacaoPainel p={p} itens={itens} pode={podeProp} notify={notify} onMudou={carregar} onProposta={() => { const el = document.getElementById("proposta-word"); if (el) el.scrollIntoView({ behavior: "smooth" }); }} />}
+      {aba === "proposta" && !ctx.celular && itens.length > 0 && <PropostaGrade itens={itens} pode={podeProp} podeGanhos={podeGanhos} ganhos={ganhos} onGanho={marcarGanho} notify={notify} onSaved={(n) => setItens((l) => l.map((x) => (x.id === n.id ? n : x)))} onMudouGanhos={carregar} />}
+      {aba === "proposta" && !ctx.celular && <div id="proposta-word"><PropostaWord p={p} itens={itens} ganhos={ganhos} ctx={ctxProp} salvar={salvar} /></div>}
 
       {aba === "ganhos" && podeProp && ganhos.length > 0 && (
         <div className="row-inline" style={{ justifyContent: "flex-end" }}>
@@ -1902,37 +1907,14 @@ function ItensGanhos({ lista, pode, notify, onMudou, unico, abrir, ctx }) {
   );
 }
 
-function Item({ it, pode, notify, onSaved, ganho, onGanho, email }) {
-  const [aberto, setAberto] = useState(false);
-  const inicial = () => ({ piso: fmtIn(it.valor_minimo), preco: fmtIn(it.preco_unit), marca: it.marca || "", anvisa: it.anvisa || "" });
-  const [f, setF] = useState(inicial);
-  useEffect(() => { if (!aberto) setF(inicial()); }, [it.valor_minimo, it.preco_unit, it.marca, it.anvisa]);
-  const [busy, setBusy] = useState(false);
-  const vm = it.valor_minimo != null ? Number(it.valor_minimo) : null;
+// Aba Itens: só a marcação "Vamos disputar" e as informações do item.
+// Preço cotado, marca, Anvisa, planilha e itens vencidos ficam na aba Proposta; o piso, em Lances → Ao vivo.
+function Item({ it, pode, notify, onSaved, ganho }) {
   const lance = it.melhor_lance != null ? Number(it.melhor_lance) : null;
-  const sug = it.piso_sugerido != null ? Number(it.piso_sugerido) : null;
-  const pisoDig = parseNum(f.piso);
-  const precoDig = parseNum(f.preco);
-  const avisoPiso = pisoDig != null && pisoDig <= 0 ? "O valor mínimo precisa ser maior que zero."
-    : pisoDig != null && precoDig != null && pisoDig > precoDig ? "O valor mínimo está acima do valor unitário cotado."
-    : pisoDig != null && it.valor_ref != null && Number(it.valor_ref) > 0 && pisoDig > Number(it.valor_ref) ? "O valor mínimo está acima da referência do edital." : "";
-
   const marcar = async (v) => {
     const { data, error } = await sb.from("itens").update({ participar: v }).eq("id", it.id).select("*").single();
     if (error) return notify(errMsg(error));
-    onSaved(data); if (v) setAberto(true);
-  };
-  const salvar = async () => {
-    if (pisoDig != null && pisoDig <= 0) return notify("O valor mínimo precisa ser maior que zero.");
-    setBusy(true);
-    const patch = { valor_minimo: pisoDig, preco_unit: precoDig, marca: f.marca.trim() || null, anvisa: f.anvisa.trim() || null };
-    if (precoDig != null && it.quantidade != null) patch.preco_total = Math.round(precoDig * Number(it.quantidade) * 100) / 100;
-    if (pisoDig !== vm) { patch.piso_por = email || null; patch.piso_em = new Date().toISOString(); }
-    const { data, error } = await sb.from("itens").update(patch).eq("id", it.id).select("*").single();
-    setBusy(false);
-    if (error) return notify(errMsg(error));
-    onSaved(data); setAberto(false);
-    notify(pisoDig != null ? `Item ${it.numero}: valor mínimo ${brl(pisoDig, 2)}` : `Item ${it.numero} salvo sem valor mínimo: o robô não dá lance nele`);
+    onSaved(data);
   };
 
   return (
@@ -1943,23 +1925,13 @@ function Item({ it, pode, notify, onSaved, ganho, onGanho, email }) {
         {pode ? <label className="toggle"><input type="checkbox" checked={it.participar} onChange={(e) => marcar(e.target.checked)} />Vamos disputar</label>
           : it.participar && <span className="tag">Vamos disputar</span>}
       </div>
-      {(ganho || (pode && (it.participar || it.nosso_arremata || it.nosso_vence))) && (
-        <div className="row-inline" style={{ gap: 8 }}>
-          {ganho ? <span className="tag ok">🏆 Item ganho{ganho.valor_unitario != null ? ` · ${brl(ganho.valor_unitario)}` : ""}</span> : null}
-          {pode && onGanho && (ganho
-            ? (ganho.origem === "manual" && <button type="button" className="linkbtn" style={{ fontSize: 12.5 }} onClick={() => onGanho(it, false)}>Desfazer</button>)
-            : <button type="button" className="btn ghost sm" onClick={() => onGanho(it, true)}>🏆 Ganhamos este item</button>)}
-        </div>
-      )}
+      {ganho && <div className="row-inline"><span className="tag ok">🏆 Item ganho{ganho.valor_unitario != null ? ` · ${brl(ganho.valor_unitario)}` : ""}</span></div>}
       <div className="item-meta">
         <span>Qtd: <b>{num(it.quantidade)} {it.unidade || ""}</b></span>
         {it.valor_ref != null && Number(it.valor_ref) > 0 && <span>Ref. unitária: <b>{brl(it.valor_ref)}</b></span>}
         {(it.situacao_portal || it.situacao) && <span>Situação: <b>{it.situacao_portal || it.situacao}</b></span>}
         {lance != null && <span>Melhor lance: <b>{brl(lance)}</b></span>}
-        {vm != null && <span>Nosso mínimo: <b style={{ color: "var(--accent-ink)" }}>{brl(vm)}</b></span>}
-        {it.participar && vm == null && <span style={{ color: "var(--red)" }}>Sem valor mínimo: o robô não lança</span>}
-        {it.preco_unit != null && <span>Cotado: <b>{brl(it.preco_unit)}</b>{it.preco_total != null ? ` · total ${brl(it.preco_total)}` : ""}</span>}
-        {it.anvisa && <span>ANVISA: <b>{it.anvisa}</b></span>}
+        {it.preco_unit != null && <span>Cotado: <b>{brl(it.preco_unit)}</b></span>}
         {it.marca_ofertada ? <span>Marca ofertada: <b>{it.marca_ofertada}</b></span> : it.marca && <span>Marca: <b>{it.marca}</b></span>}
         {it.nosso_lance != null && <span>Nosso lance: <b>{brl(it.nosso_lance)}</b></span>}
         {it.nossa_posicao != null && <span>Colocação: <b>{it.nossa_posicao}º{it.participantes ? ` de ${it.participantes}` : ""}</b></span>}
@@ -1967,34 +1939,9 @@ function Item({ it, pode, notify, onSaved, ganho, onGanho, email }) {
       {(it.vencedor_portal || it.arrematante || it.resultado_fornecedor) && (
         <div className="item-meta">
           {it.vencedor_portal ? <span>{it.nosso_vence ? "🏆 " : ""}Vencedor: <b>{it.vencedor_portal}</b></span>
-            : it.resultado_fornecedor ? <span>{it.nosso_vence ? "🏆 " : ""}Vencedor (PNCP): <b>{it.resultado_fornecedor}</b></span>
+            : it.resultado_fornecedor ? <span>{it.nosso_vence ? "🏆 " : ""}Vencedor (PNCP): <b>{it.resultado_fornecedor}</b>{it.resultado_valor != null ? ` · ${brl(it.resultado_valor)}` : ""}</span>
             : <span>{it.nosso_arremata ? "🟢 " : ""}Arrematante: <b>{it.arrematante}</b>{it.arrematante_lance != null ? ` · ${brl(it.arrematante_lance)}` : ""}</span>}
         </div>
-      )}
-      {it.participar && vm != null && lance != null && (
-        <div className={`alerta-lance ${lance >= vm ? "ok" : "ruim"}`}>{lance >= vm ? `Ainda dá para disputar: o melhor lance está ${brl(lance - vm)} acima do nosso mínimo.` : `O melhor lance está ${brl(vm - lance)} abaixo do nosso mínimo.`}</div>
-      )}
-      {it.resultado_fornecedor && <div className="estado">🏁 Vencedor: <b>{it.resultado_fornecedor}</b>{it.resultado_valor != null ? ` · ${brl(it.resultado_valor)}` : ""}</div>}
-      {it.participar && (
-        aberto || vm == null ? (
-          <div className="stack" style={{ gap: 8 }}>
-            <div className="calc">
-              <div className="field"><label htmlFor={`vm-${it.id}`}>Valor mínimo do lance (piso)</label><input id={`vm-${it.id}`} className="input num" inputMode="decimal" disabled={!pode} value={f.piso} onChange={(e) => setF({ ...f, piso: e.target.value })} placeholder="Digite o piso" /></div>
-              <div className="field"><label htmlFor={`pu-${it.id}`}>Valor unitário cotado</label><input id={`pu-${it.id}`} className="input num" inputMode="decimal" disabled={!pode} value={f.preco} onChange={(e) => setF({ ...f, preco: e.target.value })} placeholder="0,00" /></div>
-              <div className="field"><label htmlFor={`mk-${it.id}`}>Marca</label><input id={`mk-${it.id}`} className="input" disabled={!pode} value={f.marca} onChange={(e) => setF({ ...f, marca: e.target.value })} /></div>
-              <div className="field"><label htmlFor={`av-${it.id}`}>Reg. ANVISA</label><input id={`av-${it.id}`} className="input" disabled={!pode} value={f.anvisa} onChange={(e) => setF({ ...f, anvisa: e.target.value })} /></div>
-            </div>
-            {sug != null && sug !== pisoDig && (
-              <div className="row-inline" style={{ gap: 8 }}>
-                <span className="hint">Sugestão da planilha de cotação: <b>{brl(sug)}</b></span>
-                {pode && <button type="button" className="btn ghost sm" onClick={() => setF({ ...f, piso: fmtIn(sug) })}>Usar como piso</button>}
-              </div>
-            )}
-            {avisoPiso && <div className="alerta-lance ruim">{avisoPiso}</div>}
-            <p className="hint">O valor mínimo é digitado à mão e confirmado por você. O robô nunca lança abaixo dele; sem valor mínimo, o robô não lança neste item.</p>
-            {pode && <div className="row-inline"><button className="btn sm" onClick={salvar} disabled={busy}>{busy ? "Salvando…" : "Salvar"}</button>{vm != null && <button className="btn ghost sm" onClick={() => { setF(inicial()); setAberto(false); }}>Fechar</button>}</div>}
-          </div>
-        ) : <button className="linkbtn" style={{ alignSelf: "flex-start" }} onClick={() => setAberto(true)}>{pode ? "Editar valor mínimo, preço e marca" : "Ver valores"}</button>
       )}
     </div>
   );
