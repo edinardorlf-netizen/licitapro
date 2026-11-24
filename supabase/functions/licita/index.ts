@@ -272,6 +272,25 @@ async function identificacao(p: any): Promise<string[]> {
   return [...new Set(out.filter((e) => e.length > 3))];
 }
 
+// Acha no PNCP o processo do Portal de Compras Públicas pelo código dele no link de origem,
+// lendo só os pregões e dispensas publicados no dia (e no dia seguinte) em que o portal publicou.
+async function acharNoPncpPeloDia(codigo: number, dia: string, uf: string): Promise<{ cnpj: string; ano: number; seq: number } | null> {
+  const ehEste = (l: string) => /portaldecompraspublicas/i.test(l) && Number(((l || "").match(/-(\d+)\/?(?:[?#].*)?$/) || [])[1]) === Number(codigo);
+  for (const dd of [0, 1]) {
+    const d = new Date(Date.parse(`${dia}T12:00:00-03:00`) + dd * 864e5);
+    for (const mod of [6, 8]) {
+      for (let pag = 1; pag <= 15; pag++) {
+        if (Date.now() > limiteExec - 30000) return null;
+        const r = await pncpGet(`/api/consulta/v1/contratacoes/publicacao?dataInicial=${diaBR(d)}&dataFinal=${diaBR(d)}&codigoModalidadeContratacao=${mod}&uf=${uf}&pagina=${pag}&tamanhoPagina=50`);
+        const c = ((r && r.data) || []).find((x: any) => ehEste(x.linkSistemaOrigem || ""));
+        if (c) return { cnpj: c.orgaoEntidade.cnpj, ano: c.anoCompra, seq: c.sequencialCompra };
+        if (!r || pag >= (r.totalPaginas || 1)) break;
+      }
+    }
+  }
+  return null;
+}
+
 async function verificarProcesso(p: any, opts: { inicial?: boolean } = {}) {
   const empresa = await identificacao(p);
   const inicial = !!opts.inicial;
@@ -281,23 +300,38 @@ async function verificarProcesso(p: any, opts: { inicial?: boolean } = {}) {
     movs.push({ processo_id: p.id, historico: inicial, ...m });
 
   // Processos cadastrados a partir de 24/11/2026: nº do processo, modalidade e registro de preços vêm do PNCP.
-  // Processo puxado de um portal sem ligação com o PNCP: procura a mesma licitação no radar (que vem do PNCP).
   const novoParaProposta = !!p.created_at && Date.parse(p.created_at) >= Date.parse(NOVOS_DESDE);
-  // (Só os 3 dados: o resto desse processo continua vindo do portal, para não misturar os itens.)
-  if (novoParaProposta && !p.cnpj && p.pcp_path && (!p.numero_processo || !p.modalidade || p.srp == null)
-    && (!p.pncp_checado_em || Date.now() - Date.parse(p.pncp_checado_em) > 6 * 3600e3)) {
-    upd.pncp_checado_em = new Date().toISOString(); // no máximo a cada 6 h
-    const { data: ed } = await db.from("editais").select("cnpj,ano,seq").eq("conta_id", p.conta_id).ilike("link_origem", `%${p.pcp_path}%`).limit(1);
-    const e = ed && ed[0];
-    if (e && e.cnpj && e.ano && e.seq) {
-      const d = await pncpGet(`/api/consulta/v1/orgaos/${e.cnpj}/compras/${e.ano}/${e.seq}`);
-      if (d) {
-        if (!p.numero_processo && d.processo) upd.numero_processo = String(d.processo).trim();
-        if (d.modalidadeNome) upd.modalidade = d.modalidadeNome;
-        if (typeof d.srp === "boolean") upd.srp = d.srp;
+  // Processo do Portal de Compras Públicas sem ligação com o PNCP (ex.: puxado do "Acesso Rápido"):
+  // liga ao PNCP sempre que possível (decisão do dono, 24/11/2026) — primeiro pelo radar, depois procurando
+  // no PNCP pelo dia em que o portal diz que publicou. Tenta no máximo 1 vez por dia; só nos processos novos.
+  let ligouAgora = false;
+  if (novoParaProposta && !p.cnpj && p.pcp_path && Date.now() < limiteExec - 60000 && (!p.pncp_checado_em || Date.now() - Date.parse(p.pncp_checado_em) > 24 * 3600e3)) {
+    upd.pncp_checado_em = new Date().toISOString();
+    try {
+      let alvo: { cnpj: string; ano: number; seq: number } | null = null;
+      const { data: ed } = await db.from("editais").select("cnpj,ano,seq").eq("conta_id", p.conta_id).ilike("link_origem", `%${p.pcp_path}%`).limit(1);
+      if (ed && ed[0] && ed[0].cnpj) alvo = ed[0];
+      const codigo = p.pcp_codigo || pcpCodigoDe(p.pcp_path);
+      if (!alvo && codigo) {
+        const proc = await pcpGet(`/v2/licitacao/${p.pcp_path}`);
+        const pub = proc?.dataHoraPublicacao ? new Date(Date.parse(proc.dataHoraPublicacao) - 3 * 3600e3).toISOString().slice(0, 10) : null;
+        const uf = String(p.pcp_path).split("/")[0].toUpperCase();
+        if (pub && /^[A-Z]{2}$/.test(uf)) alvo = await acharNoPncpPeloDia(codigo, pub, uf);
       }
-    }
+      if (alvo) {
+        const d = await pncpGet(`/api/consulta/v1/orgaos/${alvo.cnpj}/compras/${alvo.ano}/${alvo.seq}`);
+        const ctrl = d?.numeroControlePNCP || null;
+        const { data: outro } = ctrl ? await db.from("processos").select("id").eq("conta_id", p.conta_id).eq("controle_pncp", ctrl).neq("id", p.id).maybeSingle() : { data: null };
+        if (d && !outro) {
+          Object.assign(upd, { cnpj: alvo.cnpj, ano: alvo.ano, seq: alvo.seq, controle_pncp: ctrl });
+          Object.assign(p, { cnpj: alvo.cnpj, ano: alvo.ano, seq: alvo.seq, pncp_checado_em: null });
+          ligouAgora = true;
+          add({ fonte: "sistema", tipo: "pncp", titulo: "Processo ligado ao PNCP", detalhe: `Controle ${ctrl}. Dados do processo, documentos e resultados passam a vir também do PNCP.`, ocorrido_em: new Date().toISOString(), importante: false, historico: false, chave: `ligou-pncp-${ctrl}` });
+        }
+      }
+    } catch (_) { /* tenta de novo amanhã */ }
   }
+  const movsAntesPncp = movs.length;
 
   // ---- PNCP ---- (no máximo a cada ~10 min, mesmo quando o portal é conferido a cada 2 min)
   const pncpDevido = inicial || !p.pncp_checado_em || Date.now() - Date.parse(p.pncp_checado_em) > 9 * 60e3;
@@ -409,6 +443,9 @@ async function verificarProcesso(p: any, opts: { inicial?: boolean } = {}) {
       }
     }
   }
+
+  // Acabou de ligar ao PNCP: o que o PNCP já tinha (histórico, documentos) entra como histórico, sem alarme.
+  if (ligouAgora) for (let i = movsAntesPncp; i < movs.length; i++) { movs[i].historico = true; movs[i].importante = false; }
 
   // ---- Portal de Compras Públicas (páginas públicas) ----
   if (p.pcp_path) {

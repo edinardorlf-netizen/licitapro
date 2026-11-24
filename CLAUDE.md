@@ -42,6 +42,11 @@ Leia isto primeiro. É a passagem de bastão da conversa no claude.ai para o Cla
   - **Fim do processo:** "Encaminhado para adjudicação / homologação" já conta como finalizado; a categoria "Em finalização" saiu.
   - **Relatório Vencedores:** na aba Proposta, "📄 Ler relatório Vencedores (PDF)" lê o PDF do PCP (Sessão Pública → Atas → Vencedores, baixado logado). O texto vem da `licita-edital`; o leitor está em `src/vencedores.js`. Depois da revisão, grava em `itens_ganhos` com `origem='relatorio'`.
   - **Sem leitura automática:** o relatório exige sessão logada, e por isso não é lido sozinho; só com autorização da ECUSTOMIZE.
+- **Ligação PCP → PNCP (função `licita` v17, 24/11/2026):** processo novo do PCP sem CNPJ (ex.: puxado do Acesso Rápido) é ligado ao PNCP sozinho.
+  - Primeiro procura no radar pelo `pcp_path`.
+  - Se não achar, usa `acharNoPncpPeloDia`: lê no PNCP os pregões e dispensas da UF publicados no dia (e no dia seguinte) em que o PCP publicou, e compara o código no link de origem.
+  - Tenta no máximo 1 vez por dia (`pncp_checado_em`).
+  - O que o PNCP já tinha entra como histórico, sem alarme.
 
 ## Contas e login (14/11/2026, pedido do dono: "igual o LojaPro")
 - **Cada empresa cliente é uma conta isolada** (tabela `contas`, código curto, ex.: `mirafarma`). Tudo tem `conta_id`; regra restritiva "so a minha conta" no banco; funções na nuvem filtram por conta (robô pela chave em `contas.robo_hash`; radar roda por conta). Mirafarma e Miramed são CNPJs (tabela `empresas`) dentro da conta `mirafarma`.
