@@ -18,7 +18,7 @@ import { decidir, CONFIG_PADRAO } from "./cerebro.js";
 import * as portal from "./portal.js";
 import { preencherProposta } from "./proposta.js";
 
-export const VERSAO = 4;
+export const VERSAO = 5;
 // v4 (14/11): o sinal ao LicitaPro sai sozinho a cada 5 s (antes saía entre rodadas de leitura; rodadas longas
 // atrasavam o sinal > 30 s e a trava "sem contato" disparava à toa) e as leituras rodam em segundo plano:
 // processos fora de sessão ocupam no máximo LEITURAS_JUNTAS vagas e sessão em andamento nunca espera na fila.
@@ -229,8 +229,16 @@ let loginTentativas = [];
 async function navegador() {
   if (ctxNav) return ctxNav;
   const { chromium } = await import("playwright-core");
-  const canal = cfg.NAVEGADOR || "msedge";
-  ctxNav = await chromium.launchPersistentContext(path.join(AQUI, "perfil"), { headless: false, channel: canal, viewport: null, args: ["--start-maximized"] });
+  // v5 (25/11/2026, pedido do dono): usa o Google Chrome. Se o Chrome não estiver instalado, avisa e usa o Edge.
+  // Cada navegador tem a sua pasta de perfil (o Chrome não abre o perfil do Edge).
+  const abrir = (canal) => chromium.launchPersistentContext(path.join(AQUI, canal === "msedge" ? "perfil" : `perfil-${canal}`), { headless: false, channel: canal, viewport: null, args: ["--start-maximized"] });
+  const canal = cfg.NAVEGADOR || "chrome";
+  try { ctxNav = await abrir(canal); }
+  catch (e) {
+    if (cfg.NAVEGADOR || canal === "msedge") throw e;
+    evento({ tipo: "aviso", motivo: `Não consegui abrir o Google Chrome neste computador (${String(e.message).slice(0, 120)}). Usei o Edge por enquanto: instale o Chrome para o robô passar a usá-lo.` });
+    ctxNav = await abrir("msedge");
+  }
   ctxNav.on("close", () => { ctxNav = null; for (const s of salas.values()) s.aba = null; });
   return ctxNav;
 }

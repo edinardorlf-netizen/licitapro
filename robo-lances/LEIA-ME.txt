@@ -9,7 +9,7 @@ INSTALAR NO DESKTOP (uma vez)
      deixa o computador sem suspender na tomada, coloca o robô para ligar com o Windows,
      cria o vigia de 5 em 5 min e liga o robô em segundo plano (sem janela).
   3) Se ainda não foi feito: rodar o cadastrar-chave.sql no Supabase (SQL Editor).
-  4) Dois cliques em TESTE-LOGIN.bat (opcional): abre o Edge, entra no portal e fecha em 20 s.
+  4) Dois cliques em TESTE-LOGIN.bat (opcional): abre o Google Chrome (ou o Edge, se o Chrome não estiver instalado), entra no portal e fecha em 20 s.
      Se aparecer captcha ou código, resolva você na janela. O robô nunca contorna isso.
 
 NO DIA A DIA (não precisa fazer nada)
@@ -19,7 +19,7 @@ NO DIA A DIA (não precisa fazer nada)
     LicitaPro (entram sozinhos). Fora da sessão lê a cada 5 min; perto e durante a sessão,
     a cada 3 s. Quando vê mudança (chat, situação, lance), avisa o LicitaPro, que atualiza
     o processo em até 2 minutos.
-  - Na hora da sessão dos processos em que temos proposta, abre a sala no Edge com o login
+  - Na hora da sessão dos processos em que temos proposta, abre a sala no Google Chrome com o login
     da empresa. Não feche essa janela durante a disputa e não entre com o mesmo login em
     outro computador (o portal pode derrubar a sessão).
   - Acompanhe tudo no LicitaPro: aba Robô > Ao vivo (no celular também).
@@ -38,7 +38,7 @@ ATALHOS
   node main.js calibrar <códigos> acompanha processos de outras empresas (dados públicos)
 
 PREENCHER PROPOSTA
-  Abra, no Edge do robô, a tela de cadastro da proposta do processo. No app, clique em
+  Abra, no Chrome do robô, a tela de cadastro da proposta do processo. No app, clique em
   "Preencher proposta no portal". O robô digita preço, marca e Anvisa da cotação.
   Ele NUNCA clica em Salvar/Enviar: confira e envie você.
 
