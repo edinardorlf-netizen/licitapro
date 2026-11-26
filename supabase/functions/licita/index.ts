@@ -11,7 +11,7 @@
 // Fontes: PNCP (dados públicos de todos os portais) e as páginas públicas do
 // Portal de Compras Públicas (chat da sessão, situação, itens e documentos).
 // O radar de editais fica na função "licita-radar" e a puxada com login, na "licita-sinc".
-// O Licitar Digital bloqueia acesso automático, então ele é acompanhado pelo PNCP.
+// Licitar Digital: PNCP + API de parceiros (chat, avisos, pedidos, situação), quando há credenciais.
 // =====================================================================
 import { createClient } from "npm:@supabase/supabase-js@2.49.4";
 import webpush from "npm:web-push@3.6.7";
@@ -68,6 +68,56 @@ async function pcpGet(path: string): Promise<any> {
   const t = await r.text();
   return t ? JSON.parse(t) : null;
 }
+
+// ---------- Licitar Digital (API de parceiros, só consulta) ----------
+// Credenciais nos Secrets das Edge Functions: LICITAR_CLIENT_ID, LICITAR_CLIENT_SECRET e LICITAR_API_BASE
+// (homologação: https://app-qa.licitardigital.com.br/api/v1 · produção: https://app.licitardigital.com.br/api/v1).
+// Sem as credenciais, o Licitar continua acompanhado só pelo PNCP. O limite da plataforma é 60 consultas
+// por minuto; aqui fica uma a cada 2,2 s (~27/min), para sobrar folga quando duas execuções se cruzam.
+// A API não dá lance: o Licitar não permite robô de lances (resposta da plataforma em 26/11/2026).
+const LIC_ID = Deno.env.get("LICITAR_CLIENT_ID") || "";
+const LIC_SECRET = Deno.env.get("LICITAR_CLIENT_SECRET") || "";
+const LIC_BASE = (Deno.env.get("LICITAR_API_BASE") || "https://app-qa.licitardigital.com.br/api/v1").replace(/\/+$/, "");
+const licitarLigado = !!(LIC_ID && LIC_SECRET);
+let lastLic = 0;
+let licBloqueado = false;
+async function licitarGet(path: string): Promise<any> {
+  if (licBloqueado) return null;
+  const wait = lastLic + 2200 - Date.now();
+  if (wait > 0) await sleep(wait);
+  lastLic = Date.now();
+  const r = await fetch(`${LIC_BASE}/${path.replace(/^\/+/, "")}`, {
+    headers: { Accept: "application/json", "User-Agent": UA, Authorization: `Basic ${btoa(`${LIC_ID}:${LIC_SECRET}`)}` },
+  });
+  if (r.status === 429) { licBloqueado = true; return null; }
+  if (r.status === 401 || r.status === 403) throw new Error(`Licitar Digital recusou as credenciais da API (${r.status}). Confira LICITAR_CLIENT_ID/SECRET e LICITAR_API_BASE.`);
+  if (r.status === 204 || r.status === 404) return null;
+  if (!r.ok) throw new Error(`Licitar Digital respondeu ${r.status}`);
+  const t = await r.text();
+  return t ? JSON.parse(t) : null;
+}
+// ID do processo no Licitar (o mesmo do link "…/pesquisa/120355"; a AMM Licita usa a mesma plataforma).
+const licitarIdDe = (link?: string | null) => Number(((link || "").match(/(?:licitardigital|ammlicita)[^\s]*\/pesquisa\/(\d+)/i) || [])[1] || 0) || null;
+const semHtml = (s?: string | null) => (s || "").replace(/<br\s*\/?>/gi, "\n").replace(/<[^>]+>/g, "").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/[ \t]+/g, " ").replace(/\n\s*\n+/g, "\n").trim();
+// Fase do processo no Licitar → palavras que as regras de etapa já entendem.
+function situacaoLicitar(d: any): string {
+  if (d.isItCanceled) return "Cancelado";
+  const st = String(d.stage?.description || "").toLowerCase();
+  if (/contract|homolog/.test(st)) return "Homologado (contrato)";
+  if (/adjudic/.test(st)) return "Adjudicado";
+  if (d.isItFinished) return "Finalizado";
+  if (/suspen/.test(st)) return "Suspenso";
+  if (/appeal|recurs/.test(st)) return "Em andamento: recurso";
+  if (/habilit|qualif/.test(st)) return "Em andamento: habilitação";
+  if (/decision|judg|accept|negotia/.test(st)) return "Em andamento: julgamento";
+  if (/dispute|bid|lance/.test(st)) return "Em andamento: disputa";
+  if (/proposal|publish|receiv|open/.test(st)) return "Recebendo propostas";
+  return st ? `Licitar Digital: ${d.stage.description}` : "Licitar Digital";
+}
+const LOTE_SIT: Record<string, string> = {
+  deserted: "Deserto", frustrated: "Fracassado", canceled: "Cancelado", cancelled: "Cancelado",
+  negotiation_finished: "Finalizado", finished: "Finalizado",
+};
 
 // ---------- Utilidades ----------
 const norm = (s: string) =>
@@ -251,7 +301,7 @@ function proxima(p: any): number {
   const final = /finalizad|revogad|anulad|desert|fracassad|cancelad/.test(sit) || ["concluido", "ata", "execucao"].includes(p.etapa);
   if (final) return 12 * 60;
   // Dia da disputa no Portal de Compras Públicas: chat e itens a cada 2 min (de 30 min antes até 12 h depois do início).
-  if (p.pcp_path && s && s - agora < 30 * 60e3 && agora - s < 12 * 3600e3) return 2;
+  if ((p.pcp_path || (licitarLigado && p.portal === "licitar")) && s && s - agora < 30 * 60e3 && agora - s < 12 * 3600e3) return 2;
   if (s && s - agora < 90 * 60e3 && agora - s < 3 * 24 * 3600e3) return p.pcp_path ? 10 : 20;
   if (s && s - agora < 2 * 24 * 3600e3) return 60;
   if (s && agora - s < 30 * 24 * 3600e3) return 60;
@@ -585,6 +635,78 @@ async function verificarProcesso(p: any, opts: { inicial?: boolean } = {}) {
         }
         if (completo) upd.itens_checado_em = new Date().toISOString();
       }
+    }
+  }
+
+  // ---- Licitar Digital (API de parceiros) ----
+  // Situação, data da disputa, chat da sala, avisos, esclarecimentos/impugnações/recursos e documentos.
+  const licId = licitarLigado && p.portal === "licitar" ? licitarIdDe(p.link_origem) : null;
+  if (licId && !licBloqueado) {
+    const r = await licitarGet(`partner/process?id=${licId}`);
+    const d = r?.data && !Array.isArray(r.data) ? r.data : null;
+    if (d) {
+      const sit = situacaoLicitar(d);
+      if (!inicial && p.situacao_portal && sit !== p.situacao_portal) {
+        add({ fonte: "portal", tipo: "situacao", titulo: `Situação no Licitar: ${sit}`, ocorrido_em: new Date().toISOString(), importante: true, chave: `lic-sit-${hash(sit)}-${Date.now()}` });
+      }
+      upd.situacao_portal = sit;
+      if (d.startDateTimeToDispute) upd.data_sessao = brt(String(d.startDateTimeToDispute).replace(" ", "T"));
+      if (!p.objeto && d.simpleDescription) upd.objeto = d.simpleDescription;
+      // Lotes: avisa quando um lote que a empresa disputa muda de situação.
+      const { data: meus } = await db.from("itens").select("numero,participar").eq("processo_id", p.id).eq("participar", true);
+      const disputa = new Set((meus || []).map((i: any) => Number(i.numero)));
+      for (const l of d.lotsItems || []) {
+        const nums = (l.items || []).map((i: any) => Number(i.itemNumber ?? i.sequentialNumber)).filter(Boolean);
+        const nosso = disputa.has(Number(l.lotNumber)) || nums.some((n: number) => disputa.has(n));
+        const st = l.isItDeserted ? "Deserto" : l.isItFrustrated ? "Fracassado" : LOTE_SIT[String(l.lotStatus || "")] || String(l.lotStatus || "");
+        if (!st || !nosso) continue;
+        add({ fonte: "portal", tipo: "item", titulo: `Lote ${l.lotNumber} no Licitar: ${st}`, detalhe: (l.lotDescription || "").slice(0, 160) || null, ocorrido_em: new Date().toISOString(), importante: !inicial, historico: inicial, chave: `lic-lote-${l.lotNumber}-${hash(st)}` });
+      }
+    }
+
+    // Chat da sala: lê a partir do que já foi lido (offset), 100 por página.
+    let n = Number(p.licitar_chat_n || 0);
+    const primeira = p.licitar_chat_n == null;
+    for (let pg = 0; pg < (primeira ? 30 : 6); pg++) {
+      if (licBloqueado || Date.now() > limiteExec - 20000) break;
+      const c = await licitarGet(`partner/chats?processId=${licId}&limit=100&offset=${n}`);
+      const lote: any[] = (c && Array.isArray(c.data)) ? c.data : [];
+      const total = Number(c?.pagination?.total ?? 0);
+      if (total && total < n) { n = 0; continue; } // a contagem voltou: relê tudo (as repetidas são ignoradas)
+      for (const m of lote) {
+        const texto = String(m.message || "");
+        const autor = String(m.senderType || "Licitar");
+        const quando = brt(String(m.createdAt || "").replace(" ", "T").replace(/\.\d+$/, "")) || new Date().toISOString();
+        const nossa = !!m.docSupplier && empresa.includes(String(m.docSupplier).replace(/\D/g, ""));
+        const antiga = inicial || primeira;
+        add({ fonte: "portal", tipo: "chat", titulo: /sistema/i.test(autor) ? "Mensagem do sistema" : nossa ? "Mensagem da empresa" : `Mensagem de ${autor}`, detalhe: texto, autor, ocorrido_em: quando, importante: !antiga && !nossa && importanteChat(texto, empresa), historico: antiga, chave: `lic-c-${m.id ?? hash(quando + texto)}` });
+      }
+      n += lote.length;
+      if (lote.length < 100) break;
+    }
+    upd.licitar_chat_n = n;
+
+    // Avisos, pedidos e documentos mudam pouco: no máximo a cada 30 min.
+    if (!licBloqueado && (inicial || !p.licitar_extra_em || Date.now() - Date.parse(p.licitar_extra_em) > 30 * 60e3)) {
+      const link = `https://app2.licitardigital.com.br/pesquisa/${licId}`;
+      const av = await licitarGet(`partner/process-notice?id=${licId}`);
+      for (const a of (av && Array.isArray(av.data)) ? av.data : []) {
+        add({ fonte: "portal", tipo: "aviso", titulo: "Aviso do processo no Licitar", detalhe: semHtml(a.description).slice(0, 1500), autor: a.user || null, link, ocorrido_em: brt(String(a.dateTime || "").replace(" ", "T")) || new Date().toISOString(), importante: !inicial, chave: `lic-a-${a.id}` });
+      }
+      const rq = await licitarGet(`partner/process-requests?id=${licId}`);
+      const grupos = rq?.data ? [rq.data.clarificationsAndObjections, rq.data.appealsAndcounterReasons] : [];
+      for (const g of grupos) for (const x of (g?.items || [])) {
+        const tipo = String(x.type || "Pedido");
+        const daEmpresa = ehNosso(String(x.provider || ""), empresa);
+        const det = `${x.provider ? `${x.provider}: ` : ""}${String(x.message || "").trim()}`.slice(0, 1200);
+        add({ fonte: "portal", tipo: /recurso|contrarraz/i.test(tipo) ? "recurso" : "pedido", titulo: `${tipo}${daEmpresa ? " da empresa" : ""} no Licitar`, detalhe: det, link, ocorrido_em: new Date().toISOString(), importante: !inicial && (daEmpresa || /recurso|contrarraz|impugna/i.test(tipo)), chave: `lic-p-${x.id}` });
+        if (x.answer) add({ fonte: "portal", tipo: "pedido", titulo: `Resposta: ${tipo.toLowerCase()}${daEmpresa ? " da empresa" : ""}`, detalhe: `${x.answerName ? `${x.answerName}: ` : ""}${String(x.answer).trim()}`.slice(0, 1500), link, ocorrido_em: new Date().toISOString(), importante: !inicial, chave: `lic-pr-${x.id}-${hash(String(x.answer))}` });
+      }
+      const docs = await licitarGet(`partner/processDocuments?processId=${licId}`);
+      for (const x of (docs && Array.isArray(docs.data)) ? docs.data : []) {
+        add({ fonte: "portal", tipo: "documento", titulo: `Documento no Licitar: ${x.name || x.documentType || "arquivo"}`, detalhe: x.documentType || null, link, ocorrido_em: new Date().toISOString(), importante: !inicial, chave: `lic-d-${x.documentId}` });
+      }
+      if (!licBloqueado) upd.licitar_extra_em = new Date().toISOString();
     }
   }
 

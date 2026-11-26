@@ -2009,3 +2009,9 @@ alter table public.produtos add column if not exists estoque_id uuid references 
 alter table public.produtos add column if not exists estoque_ligado_em timestamptz;
 alter table public.produtos add column if not exists estoque_ligado_por text;
 create index if not exists produtos_estoque_id_idx on public.produtos(estoque_id);
+
+-- ---------- Licitar Digital: API de parceiros (26/11/2026, migração licitar_api_acompanhamento) ----------
+-- Só consulta (chat, avisos, pedidos, documentos, situação). Credenciais nos Secrets das Edge Functions
+-- (LICITAR_CLIENT_ID, LICITAR_CLIENT_SECRET, LICITAR_API_BASE). O Licitar não permite robô de lances.
+alter table public.processos add column if not exists licitar_chat_n int;
+alter table public.processos add column if not exists licitar_extra_em timestamptz;

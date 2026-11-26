@@ -129,3 +129,16 @@ Menu na ordem do trabalho. **Feito (fase 1):** Busca (= Radar, sem mudança) →
 - Resposta final ao dono: curta, em português, dizendo o que ficou pronto e qual o próximo passo.
 
 - **Compras (v39, 24/11/2026, pedido do dono):** a aba Compras (`src/Demandas.jsx`) deixou de controlar saldo/ordens de fornecimento (as tabelas `ordens_fornecimento`/`ordem_itens` continuam no banco, sem tela). Agora só monta **cotação de compra**: busca contratos ou itens, marca itens de vários contratos, digita a quantidade das demandas (que chegam do outro sistema), junta itens iguais (mesmo `produto_id` + unidade) e baixa 2 planilhas: **para os fornecedores** (só item, descrição, unid., qtd; marca/preço/obs em amarelo; dados do fornecedor no topo) e **interna** (contrato de origem, preço e marca vendidos; não enviar). O rascunho fica só no navegador (`localStorage` `lp-compras-cotacao`). O custo pelo estoque fica dentro de cada contrato (só os itens dele).
+
+- **Licitar Digital — API de parceiros (26/11/2026):**
+  - **Robô de lances proibido:** o Licitar respondeu que não permite bots ou sistemas automatizados para dar lance, nem com cadastro. Lance por API está previsto para 2027, ainda sem data. No Licitar, só o modo assistido: o app sugere e avisa, e a pessoa lança.
+  - **Acesso liberado:** credenciais de homologação (`https://app-qa.licitardigital.com.br`). As chaves de produção virão depois.
+  - **Onde ficam as chaves:** Secrets das Edge Functions `LICITAR_CLIENT_ID`, `LICITAR_CLIENT_SECRET` e `LICITAR_API_BASE` (homologação `https://app-qa.licitardigital.com.br/api/v1`; produção `https://app.licitardigital.com.br/api/v1`). Nunca no código nem no chat.
+  - **Na função `licita`** (`verificarProcesso`, processos com `portal='licitar'`; o ID vem do link `/pesquisa/<id>`):
+    - lê situação, data da disputa, lotes que a empresa disputa e chat da sala (`processos.licitar_chat_n` = offset já lido);
+    - a cada 30 min, lê avisos, esclarecimentos/impugnações/recursos e documentos (`licitar_extra_em`);
+    - no dia da disputa, confere a cada 2 min;
+    - faz no máximo 1 consulta a cada 2,2 s; se receber 429, para até a próxima rodada;
+    - sem as chaves, nada muda.
+  - **Função `licita-licitar`:** só testa as chaves e o formato das respostas (cabeçalho `x-cron-key`).
+  - **Falta:** publicar a `licita` depois do teste com as chaves; webhook de chat em tempo real (opcional).
