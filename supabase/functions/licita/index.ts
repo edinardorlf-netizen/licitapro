@@ -707,7 +707,9 @@ async function verificarProcesso(p: any, opts: { inicial?: boolean } = {}) {
       }
       const docs = await licitarGet(`partner/processDocuments?processId=${licId}`);
       for (const x of (docs && Array.isArray(docs.data)) ? docs.data : []) {
-        add({ fonte: "portal", tipo: "documento", titulo: `Documento no Licitar: ${x.name || x.documentType || "arquivo"}`, detalhe: x.documentType || null, link, ocorrido_em: new Date().toISOString(), importante: !inicial, chave: `lic-d-${x.documentId}` });
+        // Formato real (homologação, 26/11): description, file.url, file.originalName (a documentação fala em name/documentType).
+        const nomeDoc = x.name || x.description || x.file?.originalName || x.documentType || "arquivo";
+        add({ fonte: "portal", tipo: "documento", titulo: `Documento no Licitar: ${nomeDoc}`, detalhe: x.file?.originalName && x.file.originalName !== nomeDoc ? x.file.originalName : (x.documentType || null), link: x.file?.url || link, ocorrido_em: new Date().toISOString(), importante: !inicial, chave: `lic-d-${x.documentId}` });
       }
       if (!licBloqueado) upd.licitar_extra_em = new Date().toISOString();
     }

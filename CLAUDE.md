@@ -141,4 +141,5 @@ Menu na ordem do trabalho. **Feito (fase 1):** Busca (= Radar, sem mudança) →
     - faz no máximo 1 consulta a cada 2,2 s; se receber 429, para até a próxima rodada;
     - sem as chaves, nada muda.
   - **Função `licita-licitar`:** só testa as chaves e o formato das respostas (cabeçalho `x-cron-key`).
-  - **Falta:** publicar a `licita` depois do teste com as chaves; webhook de chat em tempo real (opcional).
+  - **Testado em 26/11 com as chaves de homologação:** em processo de teste, gravou situação, data da disputa (horário certo), etapa e documento com link do PDF. O formato real dos documentos (`description`, `file.url`) difere da documentação.
+  - **Falta:** chaves de produção (pedir ao Licitar) e trocar `LICITAR_API_BASE` para produção; webhook de chat em tempo real (opcional).
