@@ -665,6 +665,9 @@ async function verificarProcesso(p: any, opts: { inicial?: boolean } = {}) {
     }
 
     // Chat da sala: lê a partir do que já foi lido (offset), 100 por página.
+    // Só quando a API conhece o processo (com chaves de homologação os processos reais não existem;
+    // assim o chat real entra como histórico, sem alarme, quando vierem as chaves de produção).
+    if (d) {
     let n = Number(p.licitar_chat_n || 0);
     const primeira = p.licitar_chat_n == null;
     for (let pg = 0; pg < (primeira ? 30 : 6); pg++) {
@@ -707,6 +710,7 @@ async function verificarProcesso(p: any, opts: { inicial?: boolean } = {}) {
         add({ fonte: "portal", tipo: "documento", titulo: `Documento no Licitar: ${x.name || x.documentType || "arquivo"}`, detalhe: x.documentType || null, link, ocorrido_em: new Date().toISOString(), importante: !inicial, chave: `lic-d-${x.documentId}` });
       }
       if (!licBloqueado) upd.licitar_extra_em = new Date().toISOString();
+    }
     }
   }
 
